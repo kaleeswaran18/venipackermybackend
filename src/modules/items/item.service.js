@@ -4,19 +4,17 @@ const Item = require("./item.model");
 // CREATE ITEM
 // =========================
 
-const createItem = async ({ name, category }) => {
+const createItem = async ({ name }) => {
   const existingItem = await Item.findOne({
     name,
-    category,
   });
 
   if (existingItem) {
-    throw new Error("Item already exists in this category");
+    throw new Error("Item already exists");
   }
 
   const item = await Item.create({
     name,
-    category,
   });
 
   return item;
@@ -29,7 +27,7 @@ const createItem = async ({ name, category }) => {
 
 const getAllItems = async () => {
   const items = await Item.find()
-    .sort({ category: 1, name: 1 });
+    .sort({ name: 1 });
 
   return items;
 };
@@ -54,41 +52,24 @@ const getItemById = async (itemId) => {
 // UPDATE ITEM
 // =========================
 
-const updateItem = async (
-  itemId,
-  { name, category, isActive }
-) => {
+const updateItem = async (itemId, { name }) => {
   const item = await Item.findById(itemId);
 
   if (!item) {
     throw new Error("Item not found");
   }
 
-  const newName = name ?? item.name;
-  const newCategory = category ?? item.category;
-
-  if (
-    newName !== item.name ||
-    newCategory !== item.category
-  ) {
+  if (name !== undefined && name !== item.name) {
     const existingItem = await Item.findOne({
-      name: newName,
-      category: newCategory,
+      name,
       _id: { $ne: itemId },
     });
 
     if (existingItem) {
-      throw new Error(
-        "Item already exists in this category"
-      );
+      throw new Error("Item already exists");
     }
-  }
 
-  item.name = newName;
-  item.category = newCategory;
-
-  if (isActive !== undefined) {
-    item.isActive = isActive;
+    item.name = name;
   }
 
   await item.save();

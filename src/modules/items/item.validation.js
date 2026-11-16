@@ -7,10 +7,6 @@ const createItemSchema = Joi.object({
     .min(2)
     .max(100)
     .required(),
-
-  category: Joi.string()
-    .valid("Used Items", "New Items")
-    .required(),
 });
 
 
@@ -20,13 +16,6 @@ const updateItemSchema = Joi.object({
     .trim()
     .min(2)
     .max(100)
-    .optional(),
-
-  category: Joi.string()
-    .valid("Used Items", "New Items")
-    .optional(),
-
-  isActive: Joi.boolean()
     .optional(),
 });
 

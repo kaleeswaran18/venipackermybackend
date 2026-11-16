@@ -22,11 +22,17 @@ const userSchema = new mongoose.Schema(
       minlength: 6,
     },
 
-    role: {
-      type: String,
-      enum: ["admin", "owner", "business_executive"],
-      default: "admin",
-    },
+  role: {
+  type: String,
+  enum: ["systemadmin", "owner", "business_executive", "supervisor",'admin'],
+  default: "systemadmin",
+},
+
+staffId: {
+  type: mongoose.Schema.Types.ObjectId,
+  ref: "Staff",
+  default: null,
+},
 
     isActive: {
       type: Boolean,

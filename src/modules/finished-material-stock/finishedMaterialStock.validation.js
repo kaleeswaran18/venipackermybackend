@@ -1,40 +1,51 @@
 const Joi = require("joi");
 
+
 // CREATE FINISHED MATERIAL STOCK
 const createFinishedMaterialStockSchema = Joi.object({
-  finishedMaterialId: Joi.string()
-    .required(),
+  name: Joi.string()
+    .trim()
+    .required()
+    .messages({
+      "string.empty":
+        "Finished material name is required",
+      "any.required":
+        "Finished material name is required",
+    }),
 
-  locationId: Joi.string()
-    .required(),
-
-  quantity: Joi.number()
-    .min(0)
-    .required(),
-
-  date: Joi.date()
-    .required(),
+  categoryId: Joi.string()
+    .hex()
+    .length(24)
+    .required()
+    .messages({
+      "string.empty":
+        "Category is required",
+      "string.hex":
+        "Invalid category ID",
+      "string.length":
+        "Invalid category ID",
+      "any.required":
+        "Category is required",
+    }),
 });
 
 
 // UPDATE FINISHED MATERIAL STOCK
-const updateFinishedMaterialStockSchema = Joi.object({
-  finishedMaterialId: Joi.string()
-    .optional(),
+const updateFinishedMaterialStockSchema =
+  Joi.object({
+    name: Joi.string()
+      .trim(),
 
-  locationId: Joi.string()
-    .optional(),
-
-  quantity: Joi.number()
-    .min(0)
-    .optional(),
-
-  date: Joi.date()
-    .optional(),
-
-  isActive: Joi.boolean()
-    .optional(),
-});
+    categoryId: Joi.string()
+      .hex()
+      .length(24)
+      .messages({
+        "string.hex":
+          "Invalid category ID",
+        "string.length":
+          "Invalid category ID",
+      }),
+  }).min(1);
 
 
 module.exports = {

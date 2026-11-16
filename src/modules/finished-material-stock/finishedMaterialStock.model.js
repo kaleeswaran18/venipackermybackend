@@ -2,32 +2,17 @@ const mongoose = require("mongoose");
 
 const finishedMaterialStockSchema = new mongoose.Schema(
   {
-    finishedMaterialId: {
+    name: {
+      type: String,
+      required: true,
+      unique: true,
+      trim: true,
+    },
+
+    categoryId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "FinishedMaterial",
       required: true,
-    },
-
-    locationId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Location",
-      required: true,
-    },
-
-    quantity: {
-      type: Number,
-      required: true,
-      min: 0,
-    },
-
-    date: {
-      type: Date,
-      required: true,
-    },
-
-    isActive: {
-      type: Boolean,
-      default: true,
     },
   },
   {

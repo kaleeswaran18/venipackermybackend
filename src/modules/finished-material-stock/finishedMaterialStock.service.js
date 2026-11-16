@@ -5,17 +5,14 @@ const FinishedMaterialStock = require(
 
 // CREATE FINISHED MATERIAL STOCK
 const createFinishedMaterialStock = async ({
-  finishedMaterialId,
-  locationId,
-  quantity,
-  date,
+  name,
+  categoryId,
 }) => {
-  const stock = await FinishedMaterialStock.create({
-    finishedMaterialId,
-    locationId,
-    quantity,
-    date,
-  });
+  const stock =
+    await FinishedMaterialStock.create({
+      name,
+      categoryId,
+    });
 
   return stock;
 };
@@ -23,10 +20,15 @@ const createFinishedMaterialStock = async ({
 
 // GET ALL FINISHED MATERIAL STOCK
 const getAllFinishedMaterialStocks = async () => {
-  const stocks = await FinishedMaterialStock.find()
-    .populate("finishedMaterialId", "name")
-    .populate("locationId", "name")
-    .sort({ date: -1 });
+  const stocks =
+    await FinishedMaterialStock.find()
+      .populate(
+        "categoryId",
+        "_id name"
+      )
+      .sort({
+        createdAt: -1,
+      });
 
   return stocks;
 };
@@ -36,11 +38,13 @@ const getAllFinishedMaterialStocks = async () => {
 const getFinishedMaterialStockById = async (
   stockId
 ) => {
-  const stock = await FinishedMaterialStock.findById(
-    stockId
-  )
-    .populate("finishedMaterialId", "name")
-    .populate("locationId", "name");
+  const stock =
+    await FinishedMaterialStock.findById(
+      stockId
+    ).populate(
+      "categoryId",
+      "_id name"
+    );
 
   if (!stock) {
     throw new Error(
@@ -55,16 +59,12 @@ const getFinishedMaterialStockById = async (
 // UPDATE FINISHED MATERIAL STOCK
 const updateFinishedMaterialStock = async (
   stockId,
-  {
-    finishedMaterialId,
-    locationId,
-    quantity,
-    date,
-    isActive,
-  }
+  { name, categoryId }
 ) => {
   const stock =
-    await FinishedMaterialStock.findById(stockId);
+    await FinishedMaterialStock.findById(
+      stockId
+    );
 
   if (!stock) {
     throw new Error(
@@ -72,25 +72,12 @@ const updateFinishedMaterialStock = async (
     );
   }
 
-  if (finishedMaterialId !== undefined) {
-    stock.finishedMaterialId =
-      finishedMaterialId;
+  if (name !== undefined) {
+    stock.name = name;
   }
 
-  if (locationId !== undefined) {
-    stock.locationId = locationId;
-  }
-
-  if (quantity !== undefined) {
-    stock.quantity = quantity;
-  }
-
-  if (date !== undefined) {
-    stock.date = date;
-  }
-
-  if (isActive !== undefined) {
-    stock.isActive = isActive;
+  if (categoryId !== undefined) {
+    stock.categoryId = categoryId;
   }
 
   await stock.save();
@@ -104,7 +91,9 @@ const deleteFinishedMaterialStock = async (
   stockId
 ) => {
   const stock =
-    await FinishedMaterialStock.findById(stockId);
+    await FinishedMaterialStock.findById(
+      stockId
+    );
 
   if (!stock) {
     throw new Error(

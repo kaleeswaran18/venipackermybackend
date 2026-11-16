@@ -9,9 +9,63 @@ const consumableRoutes = require("./modules/consumables/consumable.routes");
 const finishedMaterialRoutes = require(
   "./modules/finished-materials/finishedMaterial.routes"
 );
+const stockTransferRoutes = require("./modules/stock-transfer/stock-transfer.routes");
+const TaxRoutes = require("./modules/tax/tax.routes");
+const stockTransactionRoutes = require(
+  "./modules/StockTransaction/StockTransaction.routes"
+);
+const companyRoutes = require("./modules/company/company.routes");
+const financeCategoryRoutes = require(
+  "./modules/finance-category/finance-category.routes"
+);
+const bulkPaymentRoutes = require(
+  "./modules/customerDelivery/bulkPayment.routes"
+);
+const employeeRoutes = require("./modules/employee/employee.routes");
 const finishedMaterialStockRoutes = require(
   "./modules/finished-material-stock/finishedMaterialStock.routes"
 );
+const StaffRoutes = require("./modules/staff/staff.routes");
+const orderRoutes = require("./modules/order/order.routes");
+const employeeAttendanceRoutes = require(
+  "./modules/employee-attendance/employee-attendance.routes"
+);
+const financeTransactionRoutes = require(
+  "./modules/finance-transaction/finance-transaction.routes"
+);
+const customerDeliveryRoutes = require("./modules/customerDelivery/customerDelivery.routes");
+const dailyProgramRoutes = require("./modules/dailyprogram/dailyProgram.routes");
+const enquiryRoutes = require("./modules/enquiry/enquiry.routes");
+const weeklySalaryRoutes = require('./modules/weekly-salary/weekly-salary.routes');
+const categoryFieldRoutes = require("./modules/category-fields/category-field.routes");
+const finishedMaterialProductStockRoutes = require(
+  "./modules/finished-material-product-stock/finished-material-product-stock.routes"
+);
+const openingStockRoutes = require(
+  "./modules/opening-stock/opening-stock.routes"
+);
+const finishedMaterialProductRoutes = require(
+  "./modules/finished-material-products/finished-material-product.routes"
+);
+const salaryAdvanceRoutes = require(
+  "./modules/salary-advance/salary-advance.routes"
+);
+const updateHistoryRoutes = require(
+  "./modules/daily-history/update-history.routes"
+);
+const dailyHistoryRoutes = require(
+  "./modules/daily-history/daily-history.routes"
+);
+const purchaseRoutes = require(
+  "./modules/purchase/Purchase.routes"
+);
+const vehicleExpenseRoutes = require(
+  "./modules/VehicleExpense/VehicleExpense.routes"
+);
+
+const pieceSizeRoutes = require("./modules/piece-size/piece-size.routes");
+const itemCategoryRoutes = require("./modules/item-categories/item-category.routes");
+const propertyRoutes = require("./modules/property/property.routes");
 const app = express();
 
 
@@ -54,11 +108,49 @@ app.use(cookieParser());
 // =========================
 
 const authRoutes = require("./modules/auth/auth.routes");
-
+app.use("/api/stock-transfers", stockTransferRoutes);
+app.use("/api/company", companyRoutes);
+app.use("/api/piece-size", pieceSizeRoutes);
+app.use("/api/piece-size", pieceSizeRoutes);
+app.use("/api/tax", TaxRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/items", itemRoutes);
 app.use("/api/nails", nailRoutes);
 app.use("/api/consumables", consumableRoutes);
+app.use(
+  "/api/customer-delivery/bulk-payment",
+  bulkPaymentRoutes
+);
+app.use(
+  "/api/stock-transactions",
+  stockTransactionRoutes
+);
+app.use(
+  "/api/finance-categories",
+  financeCategoryRoutes
+);
+app.use(
+  "/api/finance-transactions",
+  financeTransactionRoutes
+);
+app.use(
+  "/api/purchases",
+  purchaseRoutes
+);
+app.use("/api/staff", StaffRoutes);
+app.use(
+  "/api/orders",
+  orderRoutes
+);
+app.use(
+  "/api/vehicle-expenses",
+  vehicleExpenseRoutes
+);
+app.use(
+  "/api/daily-programs",
+  dailyProgramRoutes
+);
+app.use("/api/customer-delivery", customerDeliveryRoutes);
 // =========================
 // User Routes
 // =========================
@@ -72,7 +164,43 @@ app.use(
   "/api/finished-material-stock",
   finishedMaterialStockRoutes
 );
-
+app.use(
+  "/api/weekly-salary",
+  weeklySalaryRoutes
+);
+app.use(
+  "/api/salary-advance",
+  salaryAdvanceRoutes
+);
+app.use("/api/employees", employeeRoutes);
+app.use(
+  "/api/opening-stock",
+  openingStockRoutes
+);
+app.use("/api/enquiries", enquiryRoutes);
+app.use("/api/properties", propertyRoutes);
+app.use(
+  "/api/daily-history",
+  dailyHistoryRoutes
+);
+app.use(
+  "/api/employee-attendance",
+  employeeAttendanceRoutes
+);
+app.use("/api/category-fields", categoryFieldRoutes);
+app.use("/api/item-categories", itemCategoryRoutes);
+app.use(
+  "/api/finished-material-products",
+  finishedMaterialProductRoutes
+);
+app.use(
+  "/api/finished-material-product-stock",
+  finishedMaterialProductStockRoutes
+);
+app.use(
+  "/api/update-history",
+  updateHistoryRoutes
+);
 // =========================
 // Auth Middleware
 // =========================

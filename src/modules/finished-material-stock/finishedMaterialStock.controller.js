@@ -2,7 +2,11 @@ const finishedMaterialStockService = require(
   "./finishedMaterialStock.service"
 );
 
+
+// =========================
 // CREATE
+// =========================
+
 const createFinishedMaterialStock = async (
   req,
   res,
@@ -11,7 +15,10 @@ const createFinishedMaterialStock = async (
   try {
     const stock =
       await finishedMaterialStockService
-        .createFinishedMaterialStock(req.body);
+        .createFinishedMaterialStock({
+          name: req.body.name,
+          categoryId: req.body.categoryId,
+        });
 
     res.status(201).json({
       success: true,
@@ -25,7 +32,10 @@ const createFinishedMaterialStock = async (
 };
 
 
+// =========================
 // GET ALL
+// =========================
+
 const getAllFinishedMaterialStocks = async (
   req,
   res,
@@ -46,7 +56,10 @@ const getAllFinishedMaterialStocks = async (
 };
 
 
+// =========================
 // GET BY ID
+// =========================
+
 const getFinishedMaterialStockById = async (
   req,
   res,
@@ -69,7 +82,10 @@ const getFinishedMaterialStockById = async (
 };
 
 
+// =========================
 // UPDATE
+// =========================
+
 const updateFinishedMaterialStock = async (
   req,
   res,
@@ -80,7 +96,10 @@ const updateFinishedMaterialStock = async (
       await finishedMaterialStockService
         .updateFinishedMaterialStock(
           req.params.id,
-          req.body
+          {
+            name: req.body.name,
+            categoryId: req.body.categoryId,
+          }
         );
 
     res.status(200).json({
@@ -95,7 +114,10 @@ const updateFinishedMaterialStock = async (
 };
 
 
+// =========================
 // DELETE
+// =========================
+
 const deleteFinishedMaterialStock = async (
   req,
   res,
