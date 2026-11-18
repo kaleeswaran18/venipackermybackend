@@ -16,8 +16,18 @@ const transactionFields = [
 ];
 
 // 1. Validate Finance Category
-const validateCategory = async (categoryId, type) => {
-  const category = await FinanceCategory.findById(categoryId);
+const validateCategory = async (
+  categoryId,
+  type,
+  session = null
+) => {
+  let query = FinanceCategory.findById(categoryId);
+
+  if (session) {
+    query = query.session(session);
+  }
+
+  const category = await query;
 
   if (!category) {
     throw new Error("Finance category not found");
@@ -62,13 +72,18 @@ const prepareTransactionData = (data) => {
 const applyTransactionUpdate = async (
   transaction,
   data,
-  userId
+  userId,
+  session = null
 ) => {
   const newType = data.type || transaction.type;
   const newCategoryId = data.categoryId || transaction.categoryId;
 
   if (data.type !== undefined || data.categoryId !== undefined) {
-    await validateCategory(newCategoryId, newType);
+    await validateCategory(
+      newCategoryId,
+      newType,
+      session
+    );
   }
 
   // Amount History - Only when amount changes
@@ -100,7 +115,9 @@ const applyTransactionUpdate = async (
 
   transaction.updatedBy = userId;
 
-  await transaction.save();
+  await transaction.save(
+    session ? { session } : {}
+  );
 
   return transaction;
 };
@@ -111,7 +128,15 @@ const createTransaction = async (
   userId,
   options = {}
 ) => {
-  console.log("Creating transaction with data:", data, "and options:", options);
+  const { session = null } = options;
+
+  console.log(
+    "Creating transaction with data:",
+    data,
+    "and options:",
+    options
+  );
+
   const isAutomatic = data.entryMode === "automatic";
 
   // Automatic creation is allowed only from internal source modules
@@ -132,40 +157,55 @@ const createTransaction = async (
     throw new Error("Invalid automatic transaction source");
   }
 
-  await validateCategory(data.categoryId, data.type);
+  await validateCategory(
+    data.categoryId,
+    data.type,
+    session
+  );
 
   // Automatic: Find existing transaction to avoid duplicates
   if (isAutomatic) {
     const sourceQuery = getSourceQuery(data);
 
-    const existingTransaction =
-      await FinanceTransaction.findOne(sourceQuery);
+    let query = FinanceTransaction.findOne(sourceQuery);
+
+    if (session) {
+      query = query.session(session);
+    }
+
+    const existingTransaction = await query;
 
     if (existingTransaction) {
       return applyTransactionUpdate(
         existingTransaction,
         data,
-        userId
+        userId,
+        session
       );
     }
   }
 
   const transactionData = prepareTransactionData(data);
 
-  const transaction = await FinanceTransaction.create({
-    ...transactionData,
+  const [transaction] = await FinanceTransaction.create(
+    [
+      {
+        ...transactionData,
 
-    entryMode: data.entryMode,
+        entryMode: data.entryMode,
 
-    sourceModule: isAutomatic ? data.sourceModule : null,
-    sourceId: isAutomatic ? data.sourceId : null,
-    sourcePaymentId: isAutomatic
-      ? data.sourcePaymentId || null
-      : null,
-    sourceType: isAutomatic ? data.sourceType : null,
+        sourceModule: isAutomatic ? data.sourceModule : null,
+        sourceId: isAutomatic ? data.sourceId : null,
+        sourcePaymentId: isAutomatic
+          ? data.sourcePaymentId || null
+          : null,
+        sourceType: isAutomatic ? data.sourceType : null,
 
-    createdBy: userId,
-  });
+        createdBy: userId,
+      },
+    ],
+    session ? { session } : {}
+  );
 
   return transaction;
 };
@@ -177,6 +217,8 @@ const updateTransaction = async (
   userId,
   options = {}
 ) => {
+  const { session = null } = options;
+
   let transaction;
 
   // Automatic Update - Find using Source Reference
@@ -186,7 +228,13 @@ const updateTransaction = async (
       sourceModule: options.sourceModule,
     });
 
-    transaction = await FinanceTransaction.findOne(sourceQuery);
+    let query = FinanceTransaction.findOne(sourceQuery);
+
+    if (session) {
+      query = query.session(session);
+    }
+
+    transaction = await query;
 
     if (!transaction) {
       throw new Error("Automatic finance transaction not found");
@@ -211,11 +259,17 @@ const updateTransaction = async (
       throw new Error("Source fields cannot be updated directly");
     }
 
-    transaction = await FinanceTransaction.findOne({
+    let query = FinanceTransaction.findOne({
       _id: transactionIdentifier,
       entryMode: "manual",
       isDeleted: false,
     });
+
+    if (session) {
+      query = query.session(session);
+    }
+
+    transaction = await query;
 
     if (!transaction) {
       throw new Error("Manual finance transaction not found");
@@ -225,7 +279,8 @@ const updateTransaction = async (
   return applyTransactionUpdate(
     transaction,
     data,
-    userId
+    userId,
+    session
   );
 };
 

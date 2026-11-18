@@ -28,11 +28,12 @@ const isNewItemCategory = (category) => {
   return name === "newitem";
 };
 
-const getCategory = async (categoryId) => {
+const getCategory = async (categoryId, session) => {
   return mongoose
     .model("ItemCategory")
     .findById(categoryId)
-    .select("name");
+    .select("name")
+    .session(session);
 };
 
 const getStockFilter = ({
@@ -54,28 +55,28 @@ const getStockFilter = ({
   return filter;
 };
 
-const getStockRecords = async (transfer) => {
+const getStockRecords = async (transfer, session) => {
   const filter = {
     itemType: transfer.itemType,
     category: transfer.category,
     referenceId: transfer.referenceId,
   };
 
-  const [sourceStock, destinationStock] = await Promise.all([
-    OpeningStock.findOne(
-      getStockFilter({
-        ...filter,
-        location: transfer.fromLocation,
-      })
-    ),
+  // Execute sequentially because parallel operations on one
+  // MongoDB transaction session are not supported.
+  const sourceStock = await OpeningStock.findOne(
+    getStockFilter({
+      ...filter,
+      location: transfer.fromLocation,
+    })
+  ).session(session);
 
-    OpeningStock.findOne(
-      getStockFilter({
-        ...filter,
-        location: transfer.toLocation,
-      })
-    ),
-  ]);
+  const destinationStock = await OpeningStock.findOne(
+    getStockFilter({
+      ...filter,
+      location: transfer.toLocation,
+    })
+  ).session(session);
 
   if (!sourceStock) {
     throw createError("Source location stock not found", 404);
@@ -92,7 +93,7 @@ const getStockRecords = async (transfer) => {
 // VALIDATE TRANSFER TYPE
 // ==========================================
 
-const getTransferDetails = async (itemType, category) => {
+const getTransferDetails = async (itemType, category, session) => {
   if (!["item", "nail", "consumable"].includes(itemType)) {
     throw createError("Invalid stock type");
   }
@@ -102,7 +103,7 @@ const getTransferDetails = async (itemType, category) => {
       throw createError("Valid item category is required");
     }
 
-    const itemCategory = await getCategory(category);
+    const itemCategory = await getCategory(category, session);
 
     if (!itemCategory) {
       throw createError("Item category not found", 404);
@@ -153,7 +154,7 @@ const normalizePieces = (pieces = []) => {
 // direction: +1 = increase
 // ==========================================
 
-const adjustNormalStock = async (stockId, quantity, direction) => {
+const adjustNormalStock = async (stockId, quantity, direction, session) => {
   if (quantity <= 0) return;
 
   const filter = {
@@ -172,7 +173,8 @@ const adjustNormalStock = async (stockId, quantity, direction) => {
       $inc: {
         currentStock: direction * quantity,
       },
-    }
+    },
+    { session }
   );
 
   if (!result.modifiedCount) {
@@ -190,7 +192,7 @@ const adjustNormalStock = async (stockId, quantity, direction) => {
 // direction: +1 = increase
 // ==========================================
 
-const adjustPieceStock = async (stockId, pieces, direction) => {
+const adjustPieceStock = async (stockId, pieces, direction, session) => {
   const changes = pieces.filter((piece) => piece.count > 0);
 
   if (!changes.length) return;
@@ -235,6 +237,7 @@ const adjustPieceStock = async (stockId, pieces, direction) => {
     },
     {
       arrayFilters,
+      session,
     }
   );
 
@@ -258,7 +261,8 @@ const moveNormalStock = async (
   sourceStockId,
   destinationStockId,
   quantity,
-  transferDirection
+  transferDirection,
+  session
 ) => {
   const sourceDirection = -transferDirection;
   const destinationDirection = transferDirection;
@@ -266,14 +270,16 @@ const moveNormalStock = async (
   await adjustNormalStock(
     sourceStockId,
     quantity,
-    sourceDirection
+    sourceDirection,
+    session
   );
 
   try {
     await adjustNormalStock(
       destinationStockId,
       quantity,
-      destinationDirection
+      destinationDirection,
+      session
     );
   } catch (error) {
     // Restore source if destination update fails
@@ -281,7 +287,8 @@ const moveNormalStock = async (
       await adjustNormalStock(
         sourceStockId,
         quantity,
-        -sourceDirection
+        -sourceDirection,
+        session
       );
     } catch (rollbackError) {
       error.rollbackError = rollbackError;
@@ -306,7 +313,8 @@ const movePieceStock = async (
   sourceStockId,
   destinationStockId,
   piece,
-  transferDirection
+  transferDirection,
+  session
 ) => {
   const sourceDirection = -transferDirection;
   const destinationDirection = transferDirection;
@@ -321,14 +329,16 @@ const movePieceStock = async (
   await adjustPieceStock(
     sourceStockId,
     pieceData,
-    sourceDirection
+    sourceDirection,
+    session
   );
 
   try {
     await adjustPieceStock(
       destinationStockId,
       pieceData,
-      destinationDirection
+      destinationDirection,
+      session
     );
   } catch (error) {
     // Restore source if destination update fails
@@ -336,7 +346,8 @@ const movePieceStock = async (
       await adjustPieceStock(
         sourceStockId,
         pieceData,
-        -sourceDirection
+        -sourceDirection,
+        session
       );
     } catch (rollbackError) {
       error.rollbackError = rollbackError;
@@ -357,7 +368,7 @@ const movePieceStock = async (
 // ROLLBACK MOVEMENTS
 // ==========================================
 
-const rollbackMovements = async (movements, isNewItem) => {
+const rollbackMovements = async (movements, isNewItem, session) => {
   const errors = [];
 
   for (const movement of [...movements].reverse()) {
@@ -367,14 +378,16 @@ const rollbackMovements = async (movements, isNewItem) => {
           movement.sourceStockId,
           movement.destinationStockId,
           movement.piece,
-          -movement.transferDirection
+          -movement.transferDirection,
+          session
         );
       } else {
         await moveNormalStock(
           movement.sourceStockId,
           movement.destinationStockId,
           movement.quantity,
-          -movement.transferDirection
+          -movement.transferDirection,
+          session
         );
       }
     } catch (error) {
@@ -397,6 +410,11 @@ const rollbackMovements = async (movements, isNewItem) => {
 // ==========================================
 
 const createStockTransfer = async (data, userId) => {
+  const session = await mongoose.startSession();
+  let createdTransfer;
+
+  try {
+    await session.withTransaction(async () => {
   const {
     fromLocation,
     toLocation,
@@ -425,7 +443,8 @@ const createStockTransfer = async (data, userId) => {
 
   const { isNewItem } = await getTransferDetails(
     itemType,
-    category
+    category,
+    session
   );
 
   // Dynamic reference model mapping
@@ -449,7 +468,7 @@ const createStockTransfer = async (data, userId) => {
   };
 
   const { sourceStock, destinationStock } =
-    await getStockRecords(transferData);
+    await getStockRecords(transferData, session);
 
   let transferQuantity;
   let normalizedPieces = [];
@@ -511,7 +530,8 @@ const createStockTransfer = async (data, userId) => {
           sourceStock._id,
           destinationStock._id,
           piece,
-          1
+          1,
+          session
         );
 
         movements.push(movement);
@@ -521,14 +541,15 @@ const createStockTransfer = async (data, userId) => {
         sourceStock._id,
         destinationStock._id,
         transferQuantity,
-        1
+        1,
+        session
       );
 
       movements.push(movement);
     }
 
     // Create transfer record
-    const transfer = await StockTransfer.create({
+    const transfer = new StockTransfer({
       ...transferData,
 
       ...(isNewItem
@@ -539,15 +560,22 @@ const createStockTransfer = async (data, userId) => {
       remarks: remarks || "",
     });
 
-    return transfer;
+    await transfer.save({ session });
+    createdTransfer = transfer;
   } catch (error) {
     try {
-      await rollbackMovements(movements, isNewItem);
+      await rollbackMovements(movements, isNewItem, session);
     } catch (rollbackError) {
       error.rollbackError = rollbackError;
     }
 
     throw error;
+  }
+    });
+
+    return createdTransfer;
+  } finally {
+    await session.endSession();
   }
 };
 
@@ -748,11 +776,16 @@ const getStockTransfersByLocation = async (
 // ==========================================
 
 const updateStockTransfer = async (id, data) => {
+  const session = await mongoose.startSession();
+  let updatedTransfer;
+
+  try {
+    await session.withTransaction(async () => {
   if (!isValidId(id)) {
     throw createError("Invalid transfer ID");
   }
 
-  const transfer = await StockTransfer.findById(id);
+  const transfer = await StockTransfer.findById(id).session(session);
 
   if (!transfer) {
     throw createError("Stock transfer not found", 404);
@@ -780,11 +813,12 @@ const updateStockTransfer = async (id, data) => {
 
   const { isNewItem } = await getTransferDetails(
     transfer.itemType,
-    transfer.category
+    transfer.category,
+    session
   );
 
   const { sourceStock, destinationStock } =
-    await getStockRecords(transfer);
+    await getStockRecords(transfer, session);
 
   let oldQuantity = 0;
   let newQuantity = 0;
@@ -922,7 +956,8 @@ const updateStockTransfer = async (id, data) => {
             pieceSizeId: change.pieceSizeId,
             count: change.count,
           },
-          change.transferDirection
+          change.transferDirection,
+          session
         );
 
         movements.push(movement);
@@ -937,7 +972,8 @@ const updateStockTransfer = async (id, data) => {
           sourceStock._id,
           destinationStock._id,
           Math.abs(difference),
-          difference > 0 ? 1 : -1
+          difference > 0 ? 1 : -1,
+          session
         );
 
         movements.push(movement);
@@ -952,18 +988,24 @@ const updateStockTransfer = async (id, data) => {
     }
 
     // Save transfer
-    await transfer.save();
+    await transfer.save({ session });
 
-    return transfer;
+    updatedTransfer = transfer;
   } catch (error) {
     // Rollback stock movements if save/update fails
     try {
-      await rollbackMovements(movements, isNewItem);
+      await rollbackMovements(movements, isNewItem, session);
     } catch (rollbackError) {
       error.rollbackError = rollbackError;
     }
 
     throw error;
+  }
+    });
+
+    return updatedTransfer;
+  } finally {
+    await session.endSession();
   }
 };
 

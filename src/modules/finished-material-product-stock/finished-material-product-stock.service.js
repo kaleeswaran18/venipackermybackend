@@ -1,4 +1,3 @@
-
 const OverallStock = require(
   "./finished-material-product-stock.model"
 );
@@ -15,7 +14,6 @@ const Location = require(
   "../locations/location.model"
 );
 
-
 const DailyHistory = require(
   "../daily-history/daily-history.model"
 );
@@ -29,11 +27,11 @@ const dailyHistoryService = require(
 // PRODUCTION
 // ----------------------------------------
 
-
 const addProductToDailyHistoryProduction = async (
   categoryId,
   productId,
-  categoryFields
+  categoryFields,
+  session = null
 ) => {
   // Get today's DailyHistory
   const todayHistory =
@@ -49,8 +47,15 @@ const addProductToDailyHistoryProduction = async (
   }
 
   // Re-fetch as a Mongoose document
-  const dailyHistory =
-    await DailyHistory.findById(todayHistory._id);
+  let dailyHistoryQuery = DailyHistory.findById(
+    todayHistory._id
+  );
+
+  if (session) {
+    dailyHistoryQuery = dailyHistoryQuery.session(session);
+  }
+
+  const dailyHistory = await dailyHistoryQuery;
 
   if (!dailyHistory) {
     const error = new Error(
@@ -134,7 +139,6 @@ const addProductToDailyHistoryProduction = async (
 };
 
 
-
 // ----------------------------------------
 // CREATE OVERALL STOCK
 // ----------------------------------------
@@ -142,131 +146,149 @@ const addProductToDailyHistoryProduction = async (
 const createOverallStock = async (data) => {
   const { categoryId, productId } = data;
 
-  // 1. Check product
-  const product =
-    await FinishedMaterialProduct.findOne({
-      _id: productId,
-      categoryId,
-    });
+  const session = await OverallStock.db.startSession();
 
-  if (!product) {
-    const error = new Error(
-      "Finished material product not found in this category"
-    );
-
-    error.statusCode = 404;
-    throw error;
-  }
-
-  // 2. Check duplicate category + product
-  const existingStock =
-    await OverallStock.findOne({
-      categoryId,
-      productId,
-    });
-
-  if (existingStock) {
-    const error = new Error(
-      "Overall stock already exists for this category and product"
-    );
-
-    error.statusCode = 409;
-    throw error;
-  }
-
-  // 3. Get active category fields
-  const categoryFields =
-    await CategoryField.find({
-      categoryId,
-      isActive: true,
-    }).sort({ order: 1 });
-
-  // 4. Create dynamic values
-  const values = {};
-
-  categoryFields.forEach((field) => {
-    values[field.key] = 0;
-  });
-
-  // 5. Get all active locations
-  const locations = await Location.find({
-    isActive: true,
-  });
-
-  if (!locations.length) {
-    const error = new Error(
-      "No active locations found"
-    );
-
-    error.statusCode = 404;
-    throw error;
-  }
-
-  // ----------------------------------------
-  // 6. PREPARE TODAY'S DAILY HISTORY PRODUCTION
-  // ----------------------------------------
-
-  let dailyHistory = null;
+  let createdStockIds = [];
 
   try {
-    dailyHistory =
-      await addProductToDailyHistoryProduction(
+    await session.withTransaction(async () => {
+      // 1. Check product
+      const product =
+        await FinishedMaterialProduct.findOne({
+          _id: productId,
+          categoryId,
+        }).session(session);
+
+      if (!product) {
+        const error = new Error(
+          "Finished material product not found in this category"
+        );
+
+        error.statusCode = 404;
+        throw error;
+      }
+
+      // 2. Check duplicate category + product
+      const existingStock =
+        await OverallStock.findOne({
+          categoryId,
+          productId,
+        }).session(session);
+
+      if (existingStock) {
+        const error = new Error(
+          "Overall stock already exists for this category and product"
+        );
+
+        error.statusCode = 409;
+        throw error;
+      }
+
+      // 3. Get active category fields
+      const categoryFields =
+        await CategoryField.find({
+          categoryId,
+          isActive: true,
+        })
+          .sort({ order: 1 })
+          .session(session);
+
+      // 4. Create dynamic values
+      const values = {};
+
+      categoryFields.forEach((field) => {
+        values[field.key] = 0;
+      });
+
+      // 5. Get all active locations
+      const locations = await Location.find({
+        isActive: true,
+      }).session(session);
+
+      if (!locations.length) {
+        const error = new Error(
+          "No active locations found"
+        );
+
+        error.statusCode = 404;
+        throw error;
+      }
+
+      // ----------------------------------------
+      // 6. PREPARE TODAY'S DAILY HISTORY PRODUCTION
+      // ----------------------------------------
+
+      let dailyHistory = null;
+
+      try {
+        dailyHistory =
+          await addProductToDailyHistoryProduction(
+            categoryId,
+            productId,
+            categoryFields,
+            session
+          );
+      } catch (error) {
+        // Daily History not found - skip production update
+        if (error.statusCode !== 404) {
+          throw error;
+        }
+
+        dailyHistory = null;
+      }
+
+      // ----------------------------------------
+      // 7. CREATE ONE STOCK RECORD FOR EACH LOCATION
+      // ----------------------------------------
+
+      const stockRecords = locations.map((location) => ({
         categoryId,
         productId,
-        categoryFields
-      );
-  } catch (error) {
-    // Daily History not found - skip production update
-    if (error.statusCode !== 404) {
-      throw error;
-    }
+        locationId: location._id,
+        values: {
+          ...values,
+        },
+      }));
 
-    dailyHistory = null;
-  }
+      const createdStocks =
+        await OverallStock.insertMany(
+          stockRecords,
+          { session }
+        );
 
-  // ----------------------------------------
-  // 7. CREATE ONE STOCK RECORD FOR EACH LOCATION
-  // ----------------------------------------
-
-  const stockRecords = locations.map((location) => ({
-    categoryId,
-    productId,
-    locationId: location._id,
-    values: {
-      ...values,
-    },
-  }));
-
-  const createdStocks =
-    await OverallStock.insertMany(stockRecords);
-
-  // ----------------------------------------
-  // 8. SAVE DAILY HISTORY IF AVAILABLE
-  // ----------------------------------------
-
-  if (dailyHistory) {
-    await dailyHistory.save();
-  }
-
-  // ----------------------------------------
-  // 9. RETURN WITH POPULATED DATA
-  // ----------------------------------------
-
-  const result = await OverallStock.find({
-    _id: {
-      $in: createdStocks.map(
+      createdStockIds = createdStocks.map(
         (stock) => stock._id
-      ),
-    },
-  })
-    .populate("categoryId", "name")
-    .populate(
-      "productId",
-      "name companyName"
-    )
-    .populate("locationId", "name");
+      );
 
-  return result;
+      // ----------------------------------------
+      // 8. SAVE DAILY HISTORY IF AVAILABLE
+      // ----------------------------------------
+
+      if (dailyHistory) {
+        await dailyHistory.save({ session });
+      }
+    });
+
+    // ----------------------------------------
+    // 9. RETURN WITH POPULATED DATA
+    // ----------------------------------------
+
+    const result = await OverallStock.find({
+      _id: {
+        $in: createdStockIds,
+      },
+    })
+      .populate("categoryId", "name")
+      .populate(
+        "productId",
+        "name companyName"
+      )
+      .populate("locationId", "name");
+
+    return result;
+  } finally {
+    await session.endSession();
+  }
 };
 
 

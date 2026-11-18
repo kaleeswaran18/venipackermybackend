@@ -27,127 +27,141 @@ const isNewItemCategory = (category) => {
  */
 
 const createOpeningStock = async (data) => {
+  const session = await mongoose.startSession();
+
   try {
-    // Get all active locations
-    const locations = await Location.find({
-      isActive: true,
-    }).select("_id name");
+    let result;
 
-    if (!locations.length) {
-      const error = new Error("No active locations found");
-      error.statusCode = 404;
-      throw error;
-    }
+    await session.withTransaction(async () => {
+      // Get all active locations
+      const locations = await Location.find({
+        isActive: true,
+      })
+        .select("_id name")
+        .session(session);
 
-    let category = null;
-    let pieces = [];
-
-    // Validate item category
-    if (data.type === "item") {
-      const ItemCategory = mongoose.model("ItemCategory");
-
-      category = await ItemCategory.findById(data.category)
-        .select("name");
-
-      if (!category) {
-        const error = new Error("Item category not found");
+      if (!locations.length) {
+        const error = new Error("No active locations found");
         error.statusCode = 404;
         throw error;
       }
 
-      // Prepare New Item pieces
-      if (isNewItemCategory(category)) {
-        const pieceSizes = await PieceSize.find()
-          .sort({ createdAt: 1 });
+      let category = null;
+      let pieces = [];
 
-        pieces = pieceSizes.map((pieceSize) => ({
-          pieceSizeId: pieceSize._id,
-          width: pieceSize.width,
-          height: pieceSize.height,
-          inch: pieceSize.inch,
-          
-          count: 0,
-        }));
-      }
-    }
-
-    const createdStocks = [];
-    const skippedLocations = [];
-
-    // Create separate document for every active location
-    for (const location of locations) {
-      const duplicateQuery = {
-        location: location._id,
-        type: data.type,
-        referenceId: data.referenceId,
-      };
-
+      // Validate item category
       if (data.type === "item") {
-        duplicateQuery.category = data.category;
+        const ItemCategory = mongoose.model("ItemCategory");
+
+        category = await ItemCategory.findById(data.category)
+          .select("name")
+          .session(session);
+
+        if (!category) {
+          const error = new Error("Item category not found");
+          error.statusCode = 404;
+          throw error;
+        }
+
+        // Prepare New Item pieces
+        if (isNewItemCategory(category)) {
+          const pieceSizes = await PieceSize.find()
+            .sort({ createdAt: 1 })
+            .session(session);
+
+          pieces = pieceSizes.map((pieceSize) => ({
+            pieceSizeId: pieceSize._id,
+            width: pieceSize.width,
+            height: pieceSize.height,
+            inch: pieceSize.inch,
+
+            count: 0,
+          }));
+        }
       }
 
-      const existingStock = await OpeningStock.findOne(
-        duplicateQuery
-      );
+      const createdStocks = [];
+      const skippedLocations = [];
 
-      // Skip duplicate only for this location
-      if (existingStock) {
-        skippedLocations.push({
-          locationId: location._id,
-          locationName: location.name,
-          reason: "Opening stock already exists",
-        });
-
-        continue;
-      }
-
-      let stockData;
-
-      // New Item
-      if (
-        data.type === "item" &&
-        isNewItemCategory(category)
-      ) {
-        stockData = {
+      // Create separate document for every active location
+      for (const location of locations) {
+        const duplicateQuery = {
+          location: location._id,
           type: data.type,
-          category: data.category,
           referenceId: data.referenceId,
-          location: location._id,
-          cft: data.cft,
-          cubicMeter: data.cubicMeter,
-          pieces: pieces.map((piece) => ({
-            ...piece,
-          })),
         };
-      } else {
-        // Used Item / Nail / Consumable
-        stockData = {
-          ...data,
-          location: location._id,
-          currentStock: data.quantity,
-        };
+
+        if (data.type === "item") {
+          duplicateQuery.category = data.category;
+        }
+
+        const existingStock = await OpeningStock.findOne(
+          duplicateQuery
+        ).session(session);
+
+        // Skip duplicate only for this location
+        if (existingStock) {
+          skippedLocations.push({
+            locationId: location._id,
+            locationName: location.name,
+            reason: "Opening stock already exists",
+          });
+
+          continue;
+        }
+
+        let stockData;
+
+        // New Item
+        if (
+          data.type === "item" &&
+          isNewItemCategory(category)
+        ) {
+          stockData = {
+            type: data.type,
+            category: data.category,
+            referenceId: data.referenceId,
+            location: location._id,
+            cft: data.cft,
+            cubicMeter: data.cubicMeter,
+            pieces: pieces.map((piece) => ({
+              ...piece,
+            })),
+          };
+        } else {
+          // Used Item / Nail / Consumable
+          stockData = {
+            ...data,
+            location: location._id,
+            currentStock: data.quantity,
+          };
+        }
+
+        const createdStocksForLocation = await OpeningStock.create(
+          [stockData],
+          { session }
+        );
+        const createdStock = createdStocksForLocation[0];
+
+        createdStocks.push(createdStock);
       }
 
-      const createdStock = await OpeningStock.create(
-        stockData
-      );
+      // All locations already have this item
+      if (!createdStocks.length) {
+        const error = new Error(
+          "Opening stock already exists in all active locations"
+        );
 
-      createdStocks.push(createdStock);
-    }
+        error.statusCode = 409;
+        error.skippedLocations = skippedLocations;
 
-    // All locations already have this item
-    if (!createdStocks.length) {
-      const error = new Error(
-        "Opening stock already exists in all active locations"
-      );
+        throw error;
+      }
 
-      error.statusCode = 409;
-      error.skippedLocations = skippedLocations;
+      result = createdStocks;
+    });
 
-      throw error;
-    }
-
-    return createdStocks;
+    return result;
 
   } catch (error) {
     if (error.code === 11000) {
@@ -160,6 +174,8 @@ const createOpeningStock = async (data) => {
     }
 
     throw error;
+  } finally {
+    await session.endSession();
   }
 };
 

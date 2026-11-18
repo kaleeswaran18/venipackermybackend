@@ -78,11 +78,17 @@ const validatePaymentData = (data) => {
   };
 };
 
-const getIncomeCategory = async () => {
-  const category = await FinanceCategory.findOne({
+const getIncomeCategory = async (session = null) => {
+  const categoryQuery = FinanceCategory.findOne({
     name: "customerDelivery",
     type: "income",
   });
+
+  if (session) {
+    categoryQuery.session(session);
+  }
+
+  const category = await categoryQuery;
 
   if (!category) {
     throw new Error(
@@ -240,6 +246,7 @@ const applyAllocationsToOrders = async ({
   orders,
   allocations,
   bulkPayment,
+  session = null,
 }) => {
   const orderMap = new Map(
     orders.map((order) => [
@@ -271,7 +278,7 @@ const applyAllocationsToOrders = async ({
 
     recalculateOrderPayment(order);
 
-    await order.save();
+    await order.save({ session });
   }
 };
 
@@ -282,11 +289,18 @@ const applyAllocationsToOrders = async ({
 const reverseBulkAllocations = async ({
   companyId,
   bulkPaymentId,
+  session = null,
 }) => {
-  const orders = await Order.find({
+  const ordersQuery = Order.find({
     companyId,
     "paymentHistory.bulkPaymentId": bulkPaymentId,
   });
+
+  if (session) {
+    ordersQuery.session(session);
+  }
+
+  const orders = await ordersQuery;
 
   for (const order of orders) {
     order.paymentHistory =
@@ -300,7 +314,7 @@ const reverseBulkAllocations = async ({
 
     recalculateOrderPayment(order);
 
-    await order.save();
+    await order.save({ session });
   }
 };
 
@@ -311,8 +325,9 @@ const reverseBulkAllocations = async ({
 const syncBulkFinanceTransaction = async ({
   bulkPayment,
   userId,
+  session = null,
 }) => {
-  const category = await getIncomeCategory();
+  const category = await getIncomeCategory(session);
 
   const sourceQuery = {
     entryMode: "automatic",
@@ -323,9 +338,15 @@ const syncBulkFinanceTransaction = async ({
     isDeleted: false,
   };
 
-  let transaction = await FinanceTransaction.findOne(
+  const transactionQuery = FinanceTransaction.findOne(
     sourceQuery
   );
+
+  if (session) {
+    transactionQuery.session(session);
+  }
+
+  let transaction = await transactionQuery;
 
   if (!transaction) {
     transaction = new FinanceTransaction({
@@ -367,11 +388,11 @@ const syncBulkFinanceTransaction = async ({
     transaction.updatedBy = userId || null;
   }
 
-  await transaction.save();
+  await transaction.save({ session });
 
   bulkPayment.financeTransactionId = transaction._id;
 
-  await bulkPayment.save();
+  await bulkPayment.save({ session });
 
   return transaction;
 };
@@ -383,50 +404,64 @@ const syncBulkFinanceTransaction = async ({
 const createBulkPayment = async (data, userId = null) => {
   const paymentData = validatePaymentData(data);
 
-  // MongoDB standalone mode - no transaction session.
-  const orders = await Order.find({
-    companyId: paymentData.companyId,
-  }).sort({ createdAt: 1, _id: 1 });
+  const session = await mongoose.startSession();
+  let bulkPaymentId;
 
-  const { allocations, unallocatedAmount } =
-    allocatePaymentFIFO(orders, paymentData.receivedAmount);
+  try {
+    await session.withTransaction(async () => {
+      const orders = await Order.find({
+        companyId: paymentData.companyId,
+      })
+        .sort({ createdAt: 1, _id: 1 })
+        .session(session);
 
-  const bulkPayment = new BulkPayment({
-    ...paymentData,
-    allocations,
-    unallocatedAmount,
-    createdBy: userId,
-    updatedBy: userId,
+      const { allocations, unallocatedAmount } =
+        allocatePaymentFIFO(orders, paymentData.receivedAmount);
 
-    allocationHistory: [
-      {
-        action: "created",
-        oldAmount: 0,
-        newAmount: paymentData.receivedAmount,
-        oldAllocations: [],
-        newAllocations: allocations,
-        changedBy: userId,
-        changedAt: new Date(),
-      },
-    ],
-  });
+      const bulkPayment = new BulkPayment({
+        ...paymentData,
+        allocations,
+        unallocatedAmount,
+        createdBy: userId,
+        updatedBy: userId,
 
-  await bulkPayment.save();
+        allocationHistory: [
+          {
+            action: "created",
+            oldAmount: 0,
+            newAmount: paymentData.receivedAmount,
+            oldAllocations: [],
+            newAllocations: allocations,
+            changedBy: userId,
+            changedAt: new Date(),
+          },
+        ],
+      });
 
-  await applyAllocationsToOrders({
-    orders,
-    allocations,
-    bulkPayment,
-  });
+      await bulkPayment.save({ session });
 
-  await syncBulkFinanceTransaction({
-    bulkPayment,
-    userId,
-  });
+      await applyAllocationsToOrders({
+        orders,
+        allocations,
+        bulkPayment,
+        session,
+      });
 
-  return await BulkPayment.findById(bulkPayment._id)
-    .populate("companyId", "companyName")
-    .populate("financeTransactionId");
+      await syncBulkFinanceTransaction({
+        bulkPayment,
+        userId,
+        session,
+      });
+
+      bulkPaymentId = bulkPayment._id;
+    });
+
+    return await BulkPayment.findById(bulkPaymentId)
+      .populate("companyId", "companyName")
+      .populate("financeTransactionId");
+  } finally {
+    await session.endSession();
+  }
 };
 
 // ==========================================
@@ -440,98 +475,113 @@ const updateBulkPayment = async (
 ) => {
   validateObjectId(bulkPaymentId, "bulk payment ID");
 
-  const bulkPayment = await BulkPayment.findById(bulkPaymentId);
+  const session = await mongoose.startSession();
 
-  if (!bulkPayment) {
-    throw new Error("Bulk Payment not found");
+  try {
+    await session.withTransaction(async () => {
+      const bulkPayment = await BulkPayment.findById(
+        bulkPaymentId
+      ).session(session);
+
+      if (!bulkPayment) {
+        throw new Error("Bulk Payment not found");
+      }
+
+      if (
+        data.companyId &&
+        data.companyId.toString() !== bulkPayment.companyId.toString()
+      ) {
+        throw new Error("Bulk Payment company cannot be changed");
+      }
+
+      const paymentData = validatePaymentData({
+        companyId: bulkPayment.companyId,
+        receivedAmount: data.receivedAmount ?? bulkPayment.receivedAmount,
+        paymentDate: data.paymentDate ?? bulkPayment.paymentDate,
+        paymentMode: data.paymentMode ?? bulkPayment.paymentMode,
+        referenceNumber: data.referenceNumber ?? bulkPayment.referenceNumber,
+        remarks: data.remarks ?? bulkPayment.remarks,
+      });
+
+      // Store old payment details before changing.
+      const oldAmount = bulkPayment.receivedAmount;
+
+      const oldAllocations = (bulkPayment.allocations || []).map(
+        (allocation) => ({
+          orderId: allocation.orderId,
+          orderNo: allocation.orderNo,
+          allocatedAmount: allocation.allocatedAmount,
+        })
+      );
+
+      // Remove only this Bulk Payment's old order entries.
+      await reverseBulkAllocations({
+        companyId: bulkPayment.companyId,
+        bulkPaymentId: bulkPayment._id,
+        session,
+      });
+
+      // Fetch orders again after reversing old payment.
+      const orders = await Order.find({
+        companyId: bulkPayment.companyId,
+      })
+        .sort({ createdAt: 1, _id: 1 })
+        .session(session);
+
+      // Recalculate FIFO allocation.
+      const { allocations, unallocatedAmount } =
+        allocatePaymentFIFO(orders, paymentData.receivedAmount);
+
+      // Update current payment.
+      bulkPayment.receivedAmount = paymentData.receivedAmount;
+      bulkPayment.paymentDate = paymentData.paymentDate;
+      bulkPayment.paymentMode = paymentData.paymentMode;
+      bulkPayment.referenceNumber = paymentData.referenceNumber;
+      bulkPayment.remarks = paymentData.remarks;
+      bulkPayment.allocations = allocations;
+      bulkPayment.unallocatedAmount = unallocatedAmount;
+      bulkPayment.updatedBy = userId;
+
+      // Keep history for older documents too.
+      if (!Array.isArray(bulkPayment.allocationHistory)) {
+        bulkPayment.allocationHistory = [];
+      }
+
+      // Save old and new amount + allocations.
+      bulkPayment.allocationHistory.push({
+        action: "updated",
+        oldAmount,
+        newAmount: paymentData.receivedAmount,
+        oldAllocations,
+        newAllocations: allocations,
+        changedBy: userId,
+        changedAt: new Date(),
+      });
+
+      await bulkPayment.save({ session });
+
+      // Apply new FIFO allocation.
+      await applyAllocationsToOrders({
+        orders,
+        allocations,
+        bulkPayment,
+        session,
+      });
+
+      // Update the SAME Finance Transaction.
+      await syncBulkFinanceTransaction({
+        bulkPayment,
+        userId,
+        session,
+      });
+    });
+
+    return await BulkPayment.findById(bulkPaymentId)
+      .populate("companyId", "companyName")
+      .populate("financeTransactionId");
+  } finally {
+    await session.endSession();
   }
-
-  if (
-    data.companyId &&
-    data.companyId.toString() !== bulkPayment.companyId.toString()
-  ) {
-    throw new Error("Bulk Payment company cannot be changed");
-  }
-
-  const paymentData = validatePaymentData({
-    companyId: bulkPayment.companyId,
-    receivedAmount: data.receivedAmount ?? bulkPayment.receivedAmount,
-    paymentDate: data.paymentDate ?? bulkPayment.paymentDate,
-    paymentMode: data.paymentMode ?? bulkPayment.paymentMode,
-    referenceNumber: data.referenceNumber ?? bulkPayment.referenceNumber,
-    remarks: data.remarks ?? bulkPayment.remarks,
-  });
-
-  // Store old payment details before changing.
-  const oldAmount = bulkPayment.receivedAmount;
-
-  const oldAllocations = (bulkPayment.allocations || []).map(
-    (allocation) => ({
-      orderId: allocation.orderId,
-      orderNo: allocation.orderNo,
-      allocatedAmount: allocation.allocatedAmount,
-    })
-  );
-
-  // Remove only this Bulk Payment's old order entries.
-  await reverseBulkAllocations({
-    companyId: bulkPayment.companyId,
-    bulkPaymentId: bulkPayment._id,
-  });
-
-  // Fetch orders again after reversing old payment.
-  const orders = await Order.find({
-    companyId: bulkPayment.companyId,
-  }).sort({ createdAt: 1, _id: 1 });
-
-  // Recalculate FIFO allocation.
-  const { allocations, unallocatedAmount } =
-    allocatePaymentFIFO(orders, paymentData.receivedAmount);
-
-  // Update current payment.
-  bulkPayment.receivedAmount = paymentData.receivedAmount;
-  bulkPayment.paymentDate = paymentData.paymentDate;
-  bulkPayment.paymentMode = paymentData.paymentMode;
-  bulkPayment.referenceNumber = paymentData.referenceNumber;
-  bulkPayment.remarks = paymentData.remarks;
-  bulkPayment.allocations = allocations;
-  bulkPayment.unallocatedAmount = unallocatedAmount;
-  bulkPayment.updatedBy = userId;
-
-  // Keep history for older documents too.
-  if (!Array.isArray(bulkPayment.allocationHistory)) {
-    bulkPayment.allocationHistory = [];
-  }
-
-  // Save old and new amount + allocations.
-  bulkPayment.allocationHistory.push({
-    action: "updated",
-    oldAmount,
-    newAmount: paymentData.receivedAmount,
-    oldAllocations,
-    newAllocations: allocations,
-    changedBy: userId,
-    changedAt: new Date(),
-  });
-
-  await bulkPayment.save();
-
-  // Apply new FIFO allocation.
-  await applyAllocationsToOrders({
-    orders,
-    allocations,
-    bulkPayment,
-  });
-
-  // Update the SAME Finance Transaction.
-  await syncBulkFinanceTransaction({
-    bulkPayment,
-    userId,
-  });
-
-  return await BulkPayment.findById(bulkPayment._id)
-    .populate("companyId", "companyName")
-    .populate("financeTransactionId");
 };
 
 // ==========================================

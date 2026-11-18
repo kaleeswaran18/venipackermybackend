@@ -1,4 +1,5 @@
 
+const mongoose = require("mongoose");
 const Property = require("./property.model");
 const FinanceCategory = require("../finance-category/finance-category.model");
 const financeTransactionService = require("../finance-transaction/finance-transaction.service");
@@ -98,6 +99,7 @@ const createPropertyFinanceTransaction = async ({
   type,
   amount,
   userId,
+  session,
 }) => {
   if (
     amount === undefined ||
@@ -112,10 +114,12 @@ const createPropertyFinanceTransaction = async ({
     throw new Error("Valid occupancy record is required");
   }
 
-  const category = await FinanceCategory.findOne({
+  const categoryQuery = FinanceCategory.findOne({
     name: "property",
     type,
   });
+  if (session) categoryQuery.session(session);
+  const category = await categoryQuery;
 
   if (!category) {
     throw new Error(`Property ${type} category not found`);
@@ -140,13 +144,20 @@ const createPropertyFinanceTransaction = async ({
     userId,
     {
       sourceModule: "property",
+      ...(session ? { session } : {}),
     }
   );
 };
 
 // UPDATE PROPERTY
 const updateProperty = async (propertyId, data, userId) => {
-  const property = await Property.findById(propertyId);
+  const session = await mongoose.startSession();
+
+  try {
+    let result;
+
+    await session.withTransaction(async () => {
+      const property = await Property.findById(propertyId).session(session);
 
   if (!property) {
     throw new Error("Property not found");
@@ -273,7 +284,7 @@ const updateProperty = async (propertyId, data, userId) => {
   }
 
   // SAVE PROPERTY
-  await property.save();
+  await property.save({ session });
 
   // CREATE AUTOMATIC FINANCE TRANSACTION
   if (financeType) {
@@ -299,10 +310,17 @@ const updateProperty = async (propertyId, data, userId) => {
       type: financeType,
       amount: financeAmount,
       userId,
+      session,
     });
   }
 
-  return property;
+      result = property;
+    });
+
+    return result;
+  } finally {
+    await session.endSession();
+  }
 };
 
 // RECOVER MISSING VACATE FINANCE TRANSACTION
@@ -349,7 +367,13 @@ const recoverVacateFinanceTransaction = async (
 
 // CREATE RENT PAYMENT + FINANCE INCOME
 const createRentPayment = async (propertyId, data, userId) => {
-  const property = await Property.findById(propertyId);
+  const session = await mongoose.startSession();
+
+  try {
+    let result;
+
+    await session.withTransaction(async () => {
+      const property = await Property.findById(propertyId).session(session);
 
   if (!property) {
     throw new Error("Property not found");
@@ -454,7 +478,7 @@ const createRentPayment = async (propertyId, data, userId) => {
   });
 
   // SAVE PROPERTY AND GENERATE PAYMENT ID
-  await property.save();
+  await property.save({ session });
 
   const savedPayment =
     property.paymentHistory[
@@ -469,7 +493,7 @@ const createRentPayment = async (propertyId, data, userId) => {
   const category = await FinanceCategory.findOne({
     name: "property",
     type: "income",
-  });
+  }).session(session);
 
   if (!category) {
     throw new Error("Property income category not found");
@@ -496,14 +520,21 @@ const createRentPayment = async (propertyId, data, userId) => {
       userId,
       {
         sourceModule: "property",
+        session,
       }
     );
 
-  return {
-    property,
-    payment: savedPayment,
-    transaction,
-  };
+      result = {
+        property,
+        payment: savedPayment,
+        transaction,
+      };
+    });
+
+    return result;
+  } finally {
+    await session.endSession();
+  }
 };
 
 // DELETE PROPERTY

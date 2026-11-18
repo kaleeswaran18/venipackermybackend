@@ -1,3 +1,4 @@
+const mongoose = require("mongoose");
 
 const VehicleExpense = require("./VehicleExpense.model");
 const FinanceCategory = require("../finance-category/finance-category.model");
@@ -81,8 +82,14 @@ const updateVehicleExpense = async (
   data,
   userId
 ) => {
+  const session = await mongoose.startSession();
+
+  try {
+    let updatedExpense;
+
+    await session.withTransaction(async () => {
   const existingExpense =
-    await VehicleExpense.findById(id);
+    await VehicleExpense.findById(id).session(session);
 
   if (!existingExpense) {
     throw new Error("Vehicle expense not found.");
@@ -320,7 +327,7 @@ const updateVehicleExpense = async (
 
     existingExpense.updatedBy = userId;
 
-    await existingExpense.save();
+    await existingExpense.save({ session });
   }
 
   // FINANCE TRANSACTION - DIESEL
@@ -341,7 +348,7 @@ const updateVehicleExpense = async (
       const dieselCategory = await FinanceCategory.findOne({
         name: "Diesel",
         type: "expense",
-      });
+      }).session(session);
 
       if (!dieselCategory) {
         throw new Error(
@@ -355,7 +362,7 @@ const updateVehicleExpense = async (
           sourceModule: SOURCE_MODULE,
           sourceId: existingExpense._id,
           sourceType: SOURCE_TYPE,
-        });
+        }).session(session);
 
       const transactionData = {
         entryMode: "automatic",
@@ -388,6 +395,7 @@ const updateVehicleExpense = async (
           userId,
           {
             sourceModule: SOURCE_MODULE,
+            session,
           }
         );
       } else {
@@ -397,6 +405,7 @@ const updateVehicleExpense = async (
           userId,
           {
             sourceModule: SOURCE_MODULE,
+            session,
           }
         );
       }
@@ -436,7 +445,7 @@ const updateVehicleExpense = async (
     const otherCategory = await FinanceCategory.findOne({
       name: "vehicle-expense-other",
       type: "expense",
-    });
+    }).session(session);
 
     if (!otherCategory && newOtherAmount > 0) {
       throw new Error(
@@ -450,7 +459,7 @@ const updateVehicleExpense = async (
         sourceModule: SOURCE_MODULE,
         sourceId: existingExpense._id,
         sourceType: OTHER_SOURCE_TYPE,
-      });
+      }).session(session);
 
     // Safely Prepare Remark Description
     const safeRemarkDescription = Array.isArray(
@@ -508,6 +517,7 @@ const updateVehicleExpense = async (
         userId,
         {
           sourceModule: SOURCE_MODULE,
+          session,
         }
       );
     } else if (newOtherAmount > 0) {
@@ -517,19 +527,32 @@ const updateVehicleExpense = async (
         userId,
         {
           sourceModule: SOURCE_MODULE,
+          session,
         }
       );
     }
   }
 
-  return existingExpense;
-};
+  updatedExpense = existingExpense;
 
+    });
+
+    return updatedExpense;
+  } finally {
+    await session.endSession();
+  }
+};
 
 // DELETE VEHICLE EXPENSE
 const deleteVehicleExpense = async (id) => {
+  const session = await mongoose.startSession();
+
+  try {
+    let deletedExpense;
+
+    await session.withTransaction(async () => {
   const vehicleExpense =
-    await VehicleExpense.findById(id);
+    await VehicleExpense.findById(id).session(session);
 
   if (!vehicleExpense) {
     throw new Error("Vehicle expense not found.");
@@ -542,7 +565,7 @@ const deleteVehicleExpense = async (id) => {
     sourceType: {
       $in: [SOURCE_TYPE, OTHER_SOURCE_TYPE],
     },
-  });
+  }).session(session);
 
   if (linkedTransaction) {
     throw new Error(
@@ -550,9 +573,16 @@ const deleteVehicleExpense = async (id) => {
     );
   }
 
-  await VehicleExpense.findByIdAndDelete(id);
+  await VehicleExpense.findByIdAndDelete(id).session(session);
 
-  return vehicleExpense;
+  deletedExpense = vehicleExpense;
+
+    });
+
+    return deletedExpense;
+  } finally {
+    await session.endSession();
+  }
 };
 
 

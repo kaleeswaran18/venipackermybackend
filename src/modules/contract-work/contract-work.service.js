@@ -1,4 +1,4 @@
-
+const mongoose = require("mongoose");
 const ContractWork = require("./contract-work.model");
 const FinanceCategory = require("../finance-category/finance-category.model");
 const FinanceTransaction = require("../finance-transaction/finance-transaction.model");
@@ -30,11 +30,17 @@ const getPaymentMethod = (mode) => {
 };
 
 // Find ContractWork Expense Category
-const getContractWorkCategory = async () => {
-  const category = await FinanceCategory.findOne({
+const getContractWorkCategory = async (session = null) => {
+  let query = FinanceCategory.findOne({
     name: CATEGORY_NAME,
     type: "expense",
   });
+
+  if (session) {
+    query = query.session(session);
+  }
+
+  const category = await query;
 
   if (!category) {
     throw new Error("ContractWork expense category not found.");
@@ -67,13 +73,14 @@ const buildFinanceTransactionData = (
 const syncPaymentFinance = async (
   contractWork,
   payment,
-  userId
+  userId,
+  session = null
 ) => {
   if (Number(payment.amount) <= 0) {
     throw new Error("Payment amount must be greater than zero");
   }
 
-  const category = await getContractWorkCategory();
+  const category = await getContractWorkCategory(session);
 
   const transactionData = buildFinanceTransactionData(
     contractWork,
@@ -82,13 +89,20 @@ const syncPaymentFinance = async (
   );
 
   // Find existing Finance Transaction for this payment
-  const existingTransaction = await FinanceTransaction.findOne({
+  let existingTransactionQuery = FinanceTransaction.findOne({
     sourceModule: SOURCE_MODULE,
     sourceId: contractWork._id,
     sourcePaymentId: payment._id,
     sourceType: payment.paymentType,
     isDeleted: false,
   });
+
+  if (session) {
+    existingTransactionQuery =
+      existingTransactionQuery.session(session);
+  }
+
+  const existingTransaction = await existingTransactionQuery;
 
   if (existingTransaction) {
     // Update existing Finance Transaction
@@ -110,6 +124,7 @@ const syncPaymentFinance = async (
       userId,
       {
         sourceModule: SOURCE_MODULE,
+        session,
       }
     );
 
@@ -121,6 +136,7 @@ const syncPaymentFinance = async (
       userId,
       {
         sourceModule: SOURCE_MODULE,
+        session,
       }
     );
 
@@ -130,18 +146,36 @@ const syncPaymentFinance = async (
 
 // Create Contract Work
 const createContractWork = async (data, userId) => {
-  const contractWork = await ContractWork.create(data);
+  const session = await mongoose.startSession();
 
-  // Sync initial Advance / Payment records
-  if (contractWork.payments.length > 0) {
-    for (const payment of contractWork.payments) {
-      await syncPaymentFinance(contractWork, payment, userId);
-    }
+  try {
+    let contractWork;
 
-    await contractWork.save();
+    await session.withTransaction(async () => {
+      [contractWork] = await ContractWork.create(
+        [data],
+        { session }
+      );
+
+      // Sync initial Advance / Payment records
+      if (contractWork.payments.length > 0) {
+        for (const payment of contractWork.payments) {
+          await syncPaymentFinance(
+            contractWork,
+            payment,
+            userId,
+            session
+          );
+        }
+
+        await contractWork.save({ session });
+      }
+    });
+
+    return contractWork;
+  } finally {
+    await session.endSession();
   }
-
-  return contractWork;
 };
 
 // Get All Contract Works
@@ -198,25 +232,42 @@ const deleteContractWork = async (id) => {
 
 // Add Payment
 const addPayment = async (contractWorkId, paymentData, userId) => {
-  const contractWork = await ContractWork.findById(contractWorkId);
+  const session = await mongoose.startSession();
 
-  if (!contractWork) {
-    throw new Error("Contract Work not found");
+  try {
+    let contractWork;
+
+    await session.withTransaction(async () => {
+      contractWork = await ContractWork.findById(
+        contractWorkId
+      ).session(session);
+
+      if (!contractWork) {
+        throw new Error("Contract Work not found");
+      }
+
+      // Add payment to Contract Work
+      contractWork.payments.push(paymentData);
+
+      const payment = contractWork.payments[
+        contractWork.payments.length - 1
+      ];
+
+      // Create linked Finance Transaction
+      await syncPaymentFinance(
+        contractWork,
+        payment,
+        userId,
+        session
+      );
+
+      await contractWork.save({ session });
+    });
+
+    return contractWork;
+  } finally {
+    await session.endSession();
   }
-
-  // Add payment to Contract Work
-  contractWork.payments.push(paymentData);
-
-  const payment = contractWork.payments[
-    contractWork.payments.length - 1
-  ];
-
-  // Create linked Finance Transaction
-  await syncPaymentFinance(contractWork, payment, userId);
-
-  await contractWork.save();
-
-  return contractWork;
 };
 
 // Update Individual Payment
@@ -226,40 +277,57 @@ const updatePayment = async (
   paymentData,
   userId
 ) => {
-  const contractWork = await ContractWork.findById(contractWorkId);
+  const session = await mongoose.startSession();
 
-  if (!contractWork) {
-    throw new Error("Contract Work not found");
+  try {
+    let contractWork;
+
+    await session.withTransaction(async () => {
+      contractWork = await ContractWork.findById(
+        contractWorkId
+      ).session(session);
+
+      if (!contractWork) {
+        throw new Error("Contract Work not found");
+      }
+
+      const payment = contractWork.payments.find(
+        (item) => item.paymentId === paymentId
+      );
+
+      if (!payment) {
+        throw new Error("Payment not found");
+      }
+
+      // Update only editable payment fields
+      const allowedFields = [
+        "amount",
+        "paymentDate",
+        "paymentMode",
+        "remarks",
+      ];
+
+      allowedFields.forEach((field) => {
+        if (paymentData[field] !== undefined) {
+          payment[field] = paymentData[field];
+        }
+      });
+
+      // Update the same linked Finance Transaction
+      await syncPaymentFinance(
+        contractWork,
+        payment,
+        userId,
+        session
+      );
+
+      await contractWork.save({ session });
+    });
+
+    return contractWork;
+  } finally {
+    await session.endSession();
   }
-
-  const payment = contractWork.payments.find(
-    (item) => item.paymentId === paymentId
-  );
-
-  if (!payment) {
-    throw new Error("Payment not found");
-  }
-
-  // Update only editable payment fields
-  const allowedFields = [
-    "amount",
-    "paymentDate",
-    "paymentMode",
-    "remarks",
-  ];
-
-  allowedFields.forEach((field) => {
-    if (paymentData[field] !== undefined) {
-      payment[field] = paymentData[field];
-    }
-  });
-
-  // Update the same linked Finance Transaction
-  await syncPaymentFinance(contractWork, payment, userId);
-
-  await contractWork.save();
-
-  return contractWork;
 };
 
 module.exports = {

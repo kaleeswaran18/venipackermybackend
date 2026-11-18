@@ -1,3 +1,4 @@
+const mongoose = require("mongoose");
 
 const CustomerDelivery = require("./customerDelivery.model");
 const Tax = require("../tax/tax.model");
@@ -52,7 +53,12 @@ const getCustomerDeliveryById = async (id) => {
 // =========================
 
 const updateCustomerDelivery = async (id, data) => {
-  const delivery = await CustomerDelivery.findById(id);
+  const session = await mongoose.startSession();
+  let updatedDelivery;
+
+  try {
+    await session.withTransaction(async () => {
+      const delivery = await CustomerDelivery.findById(id).session(session);
 
   if (!delivery) {
     throw new Error("Customer delivery not found.");
@@ -64,6 +70,7 @@ const updateCustomerDelivery = async (id, data) => {
   await delivery.populate({
     path: "orderId",
     select: "assignedLocation",
+    options: { session },
   });
 
   const locationId =
@@ -191,7 +198,7 @@ const updateCustomerDelivery = async (id, data) => {
         categoryId: change.categoryId,
         productId: change.productId,
         locationId: change.locationId,
-      });
+      }).session(session);
 
       if (!stock) {
         const error = new Error(
@@ -249,7 +256,7 @@ const updateCustomerDelivery = async (id, data) => {
         nextValue
       );
 
-      await stock.save();
+      await stock.save({ session });
     }
 
     // =========================================
@@ -318,7 +325,7 @@ const updateCustomerDelivery = async (id, data) => {
   // SAVE CUSTOMER DELIVERY
   // =========================
 
-  await delivery.save();
+  await delivery.save({ session });
 
   // ==================================================
   // TAX LOGIC
@@ -341,7 +348,7 @@ const updateCustomerDelivery = async (id, data) => {
       sourceType: "Delivery",
       sourceId: delivery._id,
       remarks: `Tax debit for delivery ${delivery.deliveryNo}`,
-    });
+    }, { session });
   }
 
   // ------------------------------------------
@@ -358,10 +365,10 @@ const updateCustomerDelivery = async (id, data) => {
       transactionType: "DEBIT",
       sourceType: "Delivery",
       sourceId: delivery._id,
-    });
+    }).session(session);
 
     if (taxRecord) {
-      await taxService.deleteTax(taxRecord._id);
+      await taxService.deleteTax(taxRecord._id, { session });
     }
   }
 
@@ -375,14 +382,23 @@ const updateCustomerDelivery = async (id, data) => {
       path: "assignedLocation",
       select: "name",
     },
+    options: { session },
   });
 
   await delivery.populate(
-    "companyId",
-    "companyName"
+    {
+      path: "companyId",
+      select: "companyName",
+      options: { session },
+    }
   );
 
-  return delivery;
+      updatedDelivery = delivery;
+    });
+    return updatedDelivery;
+  } finally {
+    await session.endSession();
+  }
 };
 
 // =========================

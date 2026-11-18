@@ -1,4 +1,5 @@
 
+const mongoose = require("mongoose");
 const PieceSize = require("./piece-size.model");
 
 const OpeningStock = require(
@@ -33,10 +34,14 @@ const createDuplicateError = (data) => {
 // HELPER: FIND NEW ITEM CATEGORY
 // ----------------------------------------
 
-const getNewItemCategory = async () => {
-  return await ItemCategory.findOne({
+const getNewItemCategory = async (session = null) => {
+  const query = ItemCategory.findOne({
     name: "newitem",
   });
+
+  if (session) query.session(session);
+
+  return await query;
 };
 
 
@@ -46,7 +51,8 @@ const getNewItemCategory = async () => {
 
 const checkDuplicatePieceSize = async (
   data,
-  excludeId = null
+  excludeId = null,
+  session = null
 ) => {
   const query = {
     width: Number(data.width),
@@ -61,7 +67,11 @@ const checkDuplicatePieceSize = async (
     };
   }
 
-  const existingPieceSize = await PieceSize.findOne(query);
+  const duplicateQuery = PieceSize.findOne(query);
+
+  if (session) duplicateQuery.session(session);
+
+  const existingPieceSize = await duplicateQuery;
 
   if (existingPieceSize) {
     throw createDuplicateError(data);
@@ -88,11 +98,16 @@ const handleDuplicateKeyError = (error, data) => {
 
 const addPieceSizeToDailyHistory = async (
   categoryId,
-  pieceSize
+  pieceSize,
+  session = null
 ) => {
-  const dailyHistories = await DailyHistory.find({
+  const dailyHistoryQuery = DailyHistory.find({
     "consumption.items.type": "item",
   });
+
+  if (session) dailyHistoryQuery.session(session);
+
+  const dailyHistories = await dailyHistoryQuery;
 
   let updatedHistories = 0;
 
@@ -141,7 +156,7 @@ const addPieceSizeToDailyHistory = async (
 
     if (isModified) {
       dailyHistory.markModified("consumption");
-      await dailyHistory.save();
+      await dailyHistory.save(session ? { session } : undefined);
 
       updatedHistories++;
     }
@@ -156,11 +171,16 @@ const addPieceSizeToDailyHistory = async (
 // ----------------------------------------
 
 const updatePieceSizeInDailyHistory = async (
-  pieceSize
+  pieceSize,
+  session = null
 ) => {
-  const dailyHistories = await DailyHistory.find({
+  const dailyHistoryQuery = DailyHistory.find({
     "consumption.items.type": "item",
   });
+
+  if (session) dailyHistoryQuery.session(session);
+
+  const dailyHistories = await dailyHistoryQuery;
 
   let updatedHistories = 0;
 
@@ -197,7 +217,7 @@ const updatePieceSizeInDailyHistory = async (
 
     if (isModified) {
       dailyHistory.markModified("consumption");
-      await dailyHistory.save();
+      await dailyHistory.save(session ? { session } : undefined);
 
       updatedHistories++;
     }
@@ -212,11 +232,16 @@ const updatePieceSizeInDailyHistory = async (
 // ----------------------------------------
 
 const deletePieceSizeFromDailyHistory = async (
-  pieceSizeId
+  pieceSizeId,
+  session = null
 ) => {
-  const dailyHistories = await DailyHistory.find({
+  const dailyHistoryQuery = DailyHistory.find({
     "consumption.items.type": "item",
   });
+
+  if (session) dailyHistoryQuery.session(session);
+
+  const dailyHistories = await dailyHistoryQuery;
 
   let updatedHistories = 0;
 
@@ -248,7 +273,7 @@ const deletePieceSizeFromDailyHistory = async (
 
     if (isModified) {
       dailyHistory.markModified("consumption");
-      await dailyHistory.save();
+      await dailyHistory.save(session ? { session } : undefined);
 
       updatedHistories++;
     }
@@ -263,67 +288,81 @@ const deletePieceSizeFromDailyHistory = async (
 // ----------------------------------------
 
 const createPieceSize = async (data) => {
-  // 1. Check Duplicate
-  await checkDuplicatePieceSize(data);
-
-  let pieceSize;
+  const session = await mongoose.startSession();
 
   try {
-    // 2. Create Piece Size
-    pieceSize = await PieceSize.create(data);
-  } catch (error) {
-    handleDuplicateKeyError(error, data);
-  }
+    let result;
 
-  // 3. Find New Item category
-  const newItemCategory = await getNewItemCategory();
+    await session.withTransaction(async () => {
+      // 1. Check Duplicate
+      await checkDuplicatePieceSize(data, null, session);
 
-  if (!newItemCategory) {
-    return pieceSize;
-  }
+      let pieceSize;
 
-  // 4. Find New Item OpeningStocks
-  const openingStocks = await OpeningStock.find({
-    type: "item",
-    category: newItemCategory._id,
-  });
+      try {
+        // 2. Create Piece Size
+        const createdPieceSizes = await PieceSize.create([data], { session });
+        pieceSize = createdPieceSizes[0];
+      } catch (error) {
+        handleDuplicateKeyError(error, data);
+      }
 
-  // 5. Add new piece to OpeningStock
-  for (const openingStock of openingStocks) {
-    if (!Array.isArray(openingStock.pieces)) {
-      openingStock.pieces = [];
-    }
+      // 3. Find New Item category
+      const newItemCategory = await getNewItemCategory(session);
 
-    const exists = openingStock.pieces.some(
-      (piece) =>
-        piece.pieceSizeId?.toString() ===
-        pieceSize._id.toString()
-    );
+      if (!newItemCategory) {
+        result = pieceSize;
+        return;
+      }
 
-    if (exists) {
-      continue;
-    }
+      // 4. Find New Item OpeningStocks
+      const openingStocks = await OpeningStock.find({
+        type: "item",
+        category: newItemCategory._id,
+      }).session(session);
 
-    openingStock.pieces.push({
-      pieceSizeId: pieceSize._id,
-      width: pieceSize.width,
-      height: pieceSize.height,
-      inch: pieceSize.inch,
-      count: 0,
+      // 5. Add new piece to OpeningStock
+      for (const openingStock of openingStocks) {
+        if (!Array.isArray(openingStock.pieces)) {
+          openingStock.pieces = [];
+        }
+
+        const exists = openingStock.pieces.some(
+          (piece) =>
+            piece.pieceSizeId?.toString() ===
+            pieceSize._id.toString()
+        );
+
+        if (exists) {
+          continue;
+        }
+
+        openingStock.pieces.push({
+          pieceSizeId: pieceSize._id,
+          width: pieceSize.width,
+          height: pieceSize.height,
+          inch: pieceSize.inch,
+          count: 0,
+        });
+
+        await openingStock.save({ session });
+      }
+
+      // 6. Add to all existing DailyHistory Consumption
+      await addPieceSizeToDailyHistory(
+        newItemCategory._id,
+        pieceSize,
+        session
+      );
+
+      result = pieceSize;
     });
 
-    await openingStock.save();
+    return result;
+  } finally {
+    await session.endSession();
   }
-
-  // 6. Add to all existing DailyHistory Consumption
-  await addPieceSizeToDailyHistory(
-    newItemCategory._id,
-    pieceSize
-  );
-
-  return pieceSize;
 };
-
 
 // ----------------------------------------
 // GET ALL PIECE SIZES
@@ -357,125 +396,150 @@ const getPieceSizeById = async (id) => {
 // ----------------------------------------
 
 const updatePieceSize = async (id, data) => {
-  // 1. Find Piece Size
-  const pieceSize = await PieceSize.findById(id);
-
-  if (!pieceSize) {
-    const error = new Error("Piece size not found");
-    error.statusCode = 404;
-    throw error;
-  }
-
-  // 2. Prepare updated values
-  const updatedData = {
-    width: data.width ?? pieceSize.width,
-    height: data.height ?? pieceSize.height,
-    inch: data.inch ?? pieceSize.inch,
-  };
-
-  // 3. Check Duplicate (Exclude Current ID)
-  await checkDuplicatePieceSize(
-    updatedData,
-    id
-  );
-
-  // 4. Update Piece Size Master
-  Object.assign(pieceSize, data);
+  const session = await mongoose.startSession();
 
   try {
-    await pieceSize.save();
-  } catch (error) {
-    handleDuplicateKeyError(error, updatedData);
+    let result;
+
+    await session.withTransaction(async () => {
+      // 1. Find Piece Size
+      const pieceSize = await PieceSize.findById(id).session(session);
+
+      if (!pieceSize) {
+        const error = new Error("Piece size not found");
+        error.statusCode = 404;
+        throw error;
+      }
+
+      // 2. Prepare updated values
+      const updatedData = {
+        width: data.width ?? pieceSize.width,
+        height: data.height ?? pieceSize.height,
+        inch: data.inch ?? pieceSize.inch,
+      };
+
+      // 3. Check Duplicate (Exclude Current ID)
+      await checkDuplicatePieceSize(
+        updatedData,
+        id,
+        session
+      );
+
+      // 4. Update Piece Size Master
+      Object.assign(pieceSize, data);
+
+      try {
+        await pieceSize.save({ session });
+      } catch (error) {
+        handleDuplicateKeyError(error, updatedData);
+      }
+
+      // 5. Find New Item category
+      const newItemCategory = await getNewItemCategory(session);
+
+      if (!newItemCategory) {
+        result = pieceSize;
+        return;
+      }
+
+      // 6. Update OpeningStock
+      const openingStocks = await OpeningStock.find({
+        type: "item",
+        category: newItemCategory._id,
+      }).session(session);
+
+      for (const openingStock of openingStocks) {
+        const piece = (openingStock.pieces || []).find(
+          (item) =>
+            item.pieceSizeId?.toString() ===
+            pieceSize._id.toString()
+        );
+
+        if (!piece) {
+          continue;
+        }
+
+        piece.width = pieceSize.width;
+        piece.height = pieceSize.height;
+        piece.inch = pieceSize.inch;
+
+        // count untouched
+        await openingStock.save({ session });
+      }
+
+      // 7. Update DailyHistory Consumption
+      await updatePieceSizeInDailyHistory(pieceSize, session);
+
+      result = pieceSize;
+    });
+
+    return result;
+  } finally {
+    await session.endSession();
   }
-
-  // 5. Find New Item category
-  const newItemCategory = await getNewItemCategory();
-
-  if (!newItemCategory) {
-    return pieceSize;
-  }
-
-  // 6. Update OpeningStock
-  const openingStocks = await OpeningStock.find({
-    type: "item",
-    category: newItemCategory._id,
-  });
-
-  for (const openingStock of openingStocks) {
-    const piece = (openingStock.pieces || []).find(
-      (item) =>
-        item.pieceSizeId?.toString() ===
-        pieceSize._id.toString()
-    );
-
-    if (!piece) {
-      continue;
-    }
-
-    piece.width = pieceSize.width;
-    piece.height = pieceSize.height;
-    piece.inch = pieceSize.inch;
-
-    // count untouched
-    await openingStock.save();
-  }
-
-  // 7. Update DailyHistory Consumption
-  await updatePieceSizeInDailyHistory(pieceSize);
-
-  return pieceSize;
 };
-
 
 // ----------------------------------------
 // DELETE PIECE SIZE
 // ----------------------------------------
 
 const deletePieceSize = async (id) => {
-  // 1. Find Piece Size
-  const pieceSize = await PieceSize.findById(id);
+  const session = await mongoose.startSession();
 
-  if (!pieceSize) {
-    const error = new Error("Piece size not found");
-    error.statusCode = 404;
-    throw error;
-  }
+  try {
+    let result;
 
-  // 2. Find New Item category
-  const newItemCategory = await getNewItemCategory();
+    await session.withTransaction(async () => {
+      // 1. Find Piece Size
+      const pieceSize = await PieceSize.findById(id).session(session);
 
-  // 3. Remove from OpeningStock
-  if (newItemCategory) {
-    const openingStocks = await OpeningStock.find({
-      type: "item",
-      category: newItemCategory._id,
+      if (!pieceSize) {
+        const error = new Error("Piece size not found");
+        error.statusCode = 404;
+        throw error;
+      }
+
+      // 2. Find New Item category
+      const newItemCategory = await getNewItemCategory(session);
+
+      // 3. Remove from OpeningStock
+      if (newItemCategory) {
+        const openingStocks = await OpeningStock.find({
+          type: "item",
+          category: newItemCategory._id,
+        }).session(session);
+
+        for (const openingStock of openingStocks) {
+          openingStock.pieces =
+            (openingStock.pieces || []).filter(
+              (piece) =>
+                piece.pieceSizeId?.toString() !==
+                pieceSize._id.toString()
+            );
+
+          await openingStock.save({ session });
+        }
+      }
+
+      // 4. Remove from DailyHistory Consumption
+      await deletePieceSizeFromDailyHistory(
+        pieceSize._id,
+        session
+      );
+
+      // 5. Delete PieceSize master
+      await pieceSize.deleteOne({ session });
+
+      result = {
+        message: "Piece size deleted successfully",
+      };
     });
 
-    for (const openingStock of openingStocks) {
-      openingStock.pieces =
-        (openingStock.pieces || []).filter(
-          (piece) =>
-            piece.pieceSizeId?.toString() !==
-            pieceSize._id.toString()
-        );
-
-      await openingStock.save();
-    }
+    return result;
+  } finally {
+    await session.endSession();
   }
-
-  // 4. Remove from DailyHistory Consumption
-  await deletePieceSizeFromDailyHistory(
-    pieceSize._id
-  );
-
-  // 5. Delete PieceSize master
-  await pieceSize.deleteOne();
-
-  return {
-    message: "Piece size deleted successfully",
-  };
 };
-
 
 module.exports = {
   createPieceSize,

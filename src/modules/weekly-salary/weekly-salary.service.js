@@ -133,6 +133,7 @@ const processEmployeeWeeklySalary = async ({
   weekStartDate,
   weekEndDate,
   employeeId,
+  session = null,
 }) => {
   if (
     !weekStartDate ||
@@ -152,7 +153,7 @@ const processEmployeeWeeklySalary = async ({
     await EmployeeAttendance.findOne({
       weekStartDate,
       weekEndDate,
-    });
+    }).session(session);
 
   if (!attendance) {
     throw new Error(
@@ -165,7 +166,7 @@ const processEmployeeWeeklySalary = async ({
   // =========================
 
   const employee =
-    await Employee.findById(employeeId);
+    await Employee.findById(employeeId).session(session);
 
   if (!employee) {
     throw new Error(
@@ -218,7 +219,7 @@ const processEmployeeWeeklySalary = async ({
     await WeeklySalary.findOne({
       weekStartDate,
       weekEndDate,
-    });
+    }).session(session);
 
   // =========================
   // CREATE WEEKLY DOCUMENT
@@ -227,19 +228,31 @@ const processEmployeeWeeklySalary = async ({
 
   if (!weeklySalary) {
     try {
-      weeklySalary = await WeeklySalary.create({
-        weekStartDate,
-        weekEndDate,
-        employees: [salaryEmployee],
-        paid: false,
-      });
+      if (session) {
+        [weeklySalary] = await WeeklySalary.create(
+          [{
+            weekStartDate,
+            weekEndDate,
+            employees: [salaryEmployee],
+            paid: false,
+          }],
+          { session }
+        );
+      } else {
+        weeklySalary = await WeeklySalary.create({
+          weekStartDate,
+          weekEndDate,
+          employees: [salaryEmployee],
+          paid: false,
+        });
+      }
 
       return weeklySalary;
     } catch (error) {
       // Another employee may have created
       // the same weekly document concurrently.
 
-      if (error.code !== 11000) {
+      if (error.code !== 11000 || session) {
         throw error;
       }
 
@@ -284,7 +297,7 @@ const processEmployeeWeeklySalary = async ({
     );
   }
 
-  await weeklySalary.save();
+  await weeklySalary.save(session ? { session } : {});
 
   return weeklySalary;
 };

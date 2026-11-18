@@ -4,14 +4,18 @@ const Tax = require("./tax.model");
 // Get Current Tax Balance
 // =========================
 
-const getCurrentTaxBalance = async (excludeId = null) => {
+const getCurrentTaxBalance = async (
+  excludeId = null,
+  options = {}
+) => {
+  const { session } = options;
   const match = {};
 
   if (excludeId) {
     match._id = { $ne: excludeId };
   }
 
-  const creditResult = await Tax.aggregate([
+  const creditQuery = Tax.aggregate([
     {
       $match: {
         ...match,
@@ -28,7 +32,13 @@ const getCurrentTaxBalance = async (excludeId = null) => {
     },
   ]);
 
-  const debitResult = await Tax.aggregate([
+  if (session) {
+    creditQuery.session(session);
+  }
+
+  const creditResult = await creditQuery;
+
+  const debitQuery = Tax.aggregate([
     {
       $match: {
         ...match,
@@ -45,6 +55,12 @@ const getCurrentTaxBalance = async (excludeId = null) => {
     },
   ]);
 
+  if (session) {
+    debitQuery.session(session);
+  }
+
+  const debitResult = await debitQuery;
+
   const totalCredit =
     creditResult[0]?.totalCredit || 0;
 
@@ -58,7 +74,8 @@ const getCurrentTaxBalance = async (excludeId = null) => {
 // Create Tax Transaction
 // =========================
 
-const createTax = async (data) => {
+const createTax = async (data, options = {}) => {
+  const { session } = options;
   let usedTax = 0;
   let externalAmount = 0;
 
@@ -79,7 +96,7 @@ const createTax = async (data) => {
 
   if (data.transactionType === "DEBIT") {
     const currentTaxBalance =
-      await getCurrentTaxBalance();
+      await getCurrentTaxBalance(null, { session });
 
     usedTax = Math.min(
       currentTaxBalance,
@@ -90,11 +107,15 @@ const createTax = async (data) => {
       data.taxAmount - usedTax;
   }
 
-  const tax = await Tax.create({
+  const taxData = {
     ...data,
     usedTax,
     externalAmount,
-  });
+  };
+
+  const tax = session
+    ? (await Tax.create([taxData], { session }))[0]
+    : await Tax.create(taxData);
 
   return tax;
 };
@@ -212,9 +233,15 @@ const getTaxSummary = async () => {
 // Update Tax Transaction
 // =========================
 
-const updateTax = async (id, data) => {
-  const tax =
-    await Tax.findById(id);
+const updateTax = async (id, data, options = {}) => {
+  const { session } = options;
+  const taxQuery = Tax.findById(id);
+
+  if (session) {
+    taxQuery.session(session);
+  }
+
+  const tax = await taxQuery;
 
   if (!tax) {
     throw new Error(
@@ -249,7 +276,7 @@ const updateTax = async (id, data) => {
 
   if (transactionType === "DEBIT") {
     const currentTaxBalance =
-      await getCurrentTaxBalance(id);
+      await getCurrentTaxBalance(id, { session });
 
     usedTax = Math.min(
       currentTaxBalance,
@@ -265,7 +292,11 @@ const updateTax = async (id, data) => {
   tax.usedTax = usedTax;
   tax.externalAmount = externalAmount;
 
-  await tax.save();
+  if (session) {
+    await tax.save({ session });
+  } else {
+    await tax.save();
+  }
 
   return tax;
 };
@@ -274,9 +305,15 @@ const updateTax = async (id, data) => {
 // Delete Tax Transaction
 // =========================
 
-const deleteTax = async (id) => {
-  const tax =
-    await Tax.findById(id);
+const deleteTax = async (id, options = {}) => {
+  const { session } = options;
+  const taxQuery = Tax.findById(id);
+
+  if (session) {
+    taxQuery.session(session);
+  }
+
+  const tax = await taxQuery;
 
   if (!tax) {
     throw new Error(
@@ -292,7 +329,7 @@ const deleteTax = async (id) => {
     tax.transactionType === "CREDIT"
   ) {
     const balanceAfterDelete =
-      await getCurrentTaxBalance(id);
+      await getCurrentTaxBalance(id, { session });
 
     if (balanceAfterDelete < 0) {
       throw new Error(
@@ -301,7 +338,13 @@ const deleteTax = async (id) => {
     }
   }
 
-  await Tax.findByIdAndDelete(id);
+  const deleteQuery = Tax.findByIdAndDelete(id);
+
+  if (session) {
+    deleteQuery.session(session);
+  }
+
+  await deleteQuery;
 
   return {
     message:

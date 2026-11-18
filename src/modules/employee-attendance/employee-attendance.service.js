@@ -1,4 +1,5 @@
 
+const mongoose = require("mongoose");
 const EmployeeAttendance = require("./employee-attendance.model");
 const Employee = require("../employee/employee.model");
 const Location = require("../locations/location.model");
@@ -69,299 +70,314 @@ const isWeekEndDate = (date, weekEndDate) => {
 // =========================
 
 const createEmployeeAttendance = async (data, userId) => {
-  const {
-    date,
-    locations,
-  } = data;
+  const session = await mongoose.startSession();
+  let result;
 
-  if (!date) {
-    throw new Error("Attendance date is required");
-  }
+  try {
+    await session.withTransaction(async () => {
 
-  if (!locations || !Array.isArray(locations)) {
-    throw new Error("Locations are required");
-  }
+    const {
+      date,
+      locations,
+    } = data;
 
-  const {
-    weekStartDate,
-    weekEndDate,
-  } = getWeekRange(date);
+    if (!date) {
+      throw new Error("Attendance date is required");
+    }
 
-  // Find existing weekly attendance
-  let attendance =
-    await EmployeeAttendance.findOne({
+    if (!locations || !Array.isArray(locations)) {
+      throw new Error("Locations are required");
+    }
+
+    const {
       weekStartDate,
       weekEndDate,
-    });
+    } = getWeekRange(date);
 
-  // If weekly document doesn't exist, create it
-  if (!attendance) {
-    attendance =
-      await EmployeeAttendance.create({
+    // Find existing weekly attendance
+    let attendance =
+      await EmployeeAttendance.findOne({
         weekStartDate,
         weekEndDate,
-        locations: [],
-      });
-  }
+      }).session(session);
 
-  // Employees whose Saturday attendance is completed
-  const salaryProcessingEmployees = [];
-
-  // =========================
-  // PROCESS LOCATIONS
-  // =========================
-
-  for (const locationData of locations) {
-    const {
-      locationId,
-      employees,
-    } = locationData;
-
-    // Check location
-    const location =
-      await Location.findById(locationId);
-
-    if (!location) {
-      throw new Error(
-        "Location not found"
-      );
+    // If weekly document doesn't exist, create it
+    if (!attendance) {
+      attendance =
+        (await EmployeeAttendance.create(
+          [{
+            weekStartDate,
+            weekEndDate,
+            locations: [],
+          }],
+          { session }
+        ))[0];
     }
 
-    if (
-      !employees ||
-      !Array.isArray(employees)
-    ) {
-      continue;
-    }
-
-    // Find location inside weekly document
-    let locationEntry =
-      attendance.locations.find(
-        (item) =>
-          item.locationId.toString() ===
-          locationId.toString()
-      );
-
-    // Create location if not exists
-    if (!locationEntry) {
-      attendance.locations.push({
-        locationId,
-        employees: [],
-      });
-
-      locationEntry =
-        attendance.locations[
-          attendance.locations.length - 1
-        ];
-    }
+    // Employees whose Saturday attendance is completed
+    const salaryProcessingEmployees = [];
 
     // =========================
-    // PROCESS EMPLOYEES
+    // PROCESS LOCATIONS
     // =========================
 
-    for (const employeeData of employees) {
+    for (const locationData of locations) {
       const {
-        employeeId,
-        name,
-        day,
-      } = employeeData;
+        locationId,
+        employees,
+      } = locationData;
 
-      // Check employee
-      const employee =
-        await Employee.findById(employeeId);
+      // Check location
+      const location =
+        await Location.findById(locationId).session(session);
 
-      if (!employee) {
+      if (!location) {
         throw new Error(
-          `Employee not found: ${employeeId}`
+          "Location not found"
         );
       }
 
-      // Find employee inside location
-      let employeeEntry =
-        locationEntry.employees.find(
+      if (
+        !employees ||
+        !Array.isArray(employees)
+      ) {
+        continue;
+      }
+
+      // Find location inside weekly document
+      let locationEntry =
+        attendance.locations.find(
           (item) =>
-            item.employeeId.toString() ===
-            employeeId.toString()
+            item.locationId.toString() ===
+            locationId.toString()
         );
 
-      // Create employee if not exists
-      if (!employeeEntry) {
-        locationEntry.employees.push({
-          employeeId,
-          name:
-            name || employee.name,
-          days: [],
+      // Create location if not exists
+      if (!locationEntry) {
+        attendance.locations.push({
+          locationId,
+          employees: [],
         });
 
-        employeeEntry =
-          locationEntry.employees[
-            locationEntry.employees.length - 1
+        locationEntry =
+          attendance.locations[
+            attendance.locations.length - 1
           ];
       }
 
       // =========================
-      // CHECK DUPLICATE DAY
+      // PROCESS EMPLOYEES
       // =========================
 
-      const existingDay =
-        employeeEntry.days.find(
-          (item) =>
-            new Date(item.date)
-              .toDateString() ===
-            new Date(day.date)
-              .toDateString()
-        );
+      for (const employeeData of employees) {
+        const {
+          employeeId,
+          name,
+          day,
+        } = employeeData;
 
-      if (existingDay) {
-        throw new Error(
-          `Attendance already exists for ${employee.name} on this date`
-        );
-      }
+        // Check employee
+        const employee =
+          await Employee.findById(employeeId).session(session);
 
-      // =========================
-      // ADD DAILY ATTENDANCE
-      // =========================
-
-      employeeEntry.days.push({
-        date: day.date,
-
-        status: day.status,
-
-        workCategory:
-          day.workCategory || null,
-
-        permanentLocationId:
-          day.permanentLocationId ||
-          employee.permanentLocationId,
-
-        workLocationId:
-          day.workLocationId ||
-          locationId,
-
-        temporaryRelocation:
-          day.temporaryRelocation || false,
-
-        toLocationId:
-          day.toLocationId || null,
-
-        punchIn:
-          day.punchIn || null,
-
-        punchOut:
-          day.punchOut || null,
-
-        workingHours:
-          day.workingHours || 0,
-
-        otApplicable:
-          day.otApplicable || false,
-
-        otHours:
-          day.otHours || 0,
-
-        advance: {
-          amount:
-            day.advance?.amount || 0,
-
-          remark:
-            day.advance?.remark || null,
-        },
-
-        remark:
-          day.remark || null,
-      });
-
-      // =========================
-      // GET CREATED DAY
-      // =========================
-
-      const createdDay =
-        employeeEntry.days[
-          employeeEntry.days.length - 1
-        ];
-
-      // =========================
-      // QUEUE WEEKLY SALARY
-      // SATURDAY LEAVE OR PUNCH OUT
-      // =========================
-
-      if (
-        isWeekEndDate(
-          createdDay.date,
-          attendance.weekEndDate
-        ) &&
-        (
-          createdDay.status === "Leave" ||
-          (
-            createdDay.status !== "Leave" &&
-            Boolean(createdDay.punchOut)
-          )
-        )
-      ) {
-        salaryProcessingEmployees.push({
-          employeeId: employee._id,
-          weekStartDate: attendance.weekStartDate,
-          weekEndDate: attendance.weekEndDate,
-        });
-      }
-
-      // =========================
-      // CREATE FINANCE TRANSACTION
-      // EXISTING LOGIC
-      // =========================
-
-      if (Number(createdDay.advance.amount) > 0) {
-        const advanceCategory = await FinanceCategory.findOne({
-          name: "employeeadvancesalary",
-          type: "expense",
-        });
-
-        if (!advanceCategory) {
+        if (!employee) {
           throw new Error(
-            "Employee advance salary expense category not found"
+            `Employee not found: ${employeeId}`
           );
         }
 
-        const transaction = await createTransaction(
-          {
-            entryMode: "automatic",
-            type: "expense",
-            categoryId: advanceCategory._id,
-            locationId: createdDay.workLocationId,
-            amount: Number(createdDay.advance.amount),
-            transactionDate: createdDay.date,
-            paymentMethod: "cash",
-            description: `Employee Advance - ${employee.name}`,
-            sourceModule: "employeeadvancesalary",
-            sourceId: createdDay.advance.sourceId,
-            sourceType: "daily-advance",
-          },
-          userId,
-          {
-            sourceModule: "employeeadvancesalary",
-          }
-        );
+        // Find employee inside location
+        let employeeEntry =
+          locationEntry.employees.find(
+            (item) =>
+              item.employeeId.toString() ===
+              employeeId.toString()
+          );
 
-        createdDay.advance.transactionId = transaction._id;
+        // Create employee if not exists
+        if (!employeeEntry) {
+          locationEntry.employees.push({
+            employeeId,
+            name:
+              name || employee.name,
+            days: [],
+          });
+
+          employeeEntry =
+            locationEntry.employees[
+              locationEntry.employees.length - 1
+            ];
+        }
+
+        // =========================
+        // CHECK DUPLICATE DAY
+        // =========================
+
+        const existingDay =
+          employeeEntry.days.find(
+            (item) =>
+              new Date(item.date)
+                .toDateString() ===
+              new Date(day.date)
+                .toDateString()
+          );
+
+        if (existingDay) {
+          throw new Error(
+            `Attendance already exists for ${employee.name} on this date`
+          );
+        }
+
+        // =========================
+        // ADD DAILY ATTENDANCE
+        // =========================
+
+        employeeEntry.days.push({
+          date: day.date,
+
+          status: day.status,
+
+          workCategory:
+            day.workCategory || null,
+
+          permanentLocationId:
+            day.permanentLocationId ||
+            employee.permanentLocationId,
+
+          workLocationId:
+            day.workLocationId ||
+            locationId,
+
+          temporaryRelocation:
+            day.temporaryRelocation || false,
+
+          toLocationId:
+            day.toLocationId || null,
+
+          punchIn:
+            day.punchIn || null,
+
+          punchOut:
+            day.punchOut || null,
+
+          workingHours:
+            day.workingHours || 0,
+
+          otApplicable:
+            day.otApplicable || false,
+
+          otHours:
+            day.otHours || 0,
+
+          advance: {
+            amount:
+              day.advance?.amount || 0,
+
+            remark:
+              day.advance?.remark || null,
+          },
+
+          remark:
+            day.remark || null,
+        });
+
+        // =========================
+        // GET CREATED DAY
+        // =========================
+
+        const createdDay =
+          employeeEntry.days[
+            employeeEntry.days.length - 1
+          ];
+
+        // =========================
+        // QUEUE WEEKLY SALARY
+        // SATURDAY LEAVE OR PUNCH OUT
+        // =========================
+
+        if (
+          isWeekEndDate(
+            createdDay.date,
+            attendance.weekEndDate
+          ) &&
+          (
+            createdDay.status === "Leave" ||
+            (
+              createdDay.status !== "Leave" &&
+              Boolean(createdDay.punchOut)
+            )
+          )
+        ) {
+          salaryProcessingEmployees.push({
+            employeeId: employee._id,
+            weekStartDate: attendance.weekStartDate,
+            weekEndDate: attendance.weekEndDate,
+          });
+        }
+
+        // =========================
+        // CREATE FINANCE TRANSACTION
+        // EXISTING LOGIC
+        // =========================
+
+        if (Number(createdDay.advance.amount) > 0) {
+          const advanceCategory = await FinanceCategory.findOne({
+            name: "employeeadvancesalary",
+            type: "expense",
+          }).session(session);
+
+          if (!advanceCategory) {
+            throw new Error(
+              "Employee advance salary expense category not found"
+            );
+          }
+
+          const transaction = await createTransaction(
+            {
+              entryMode: "automatic",
+              type: "expense",
+              categoryId: advanceCategory._id,
+              locationId: createdDay.workLocationId,
+              amount: Number(createdDay.advance.amount),
+              transactionDate: createdDay.date,
+              paymentMethod: "cash",
+              description: `Employee Advance - ${employee.name}`,
+              sourceModule: "employeeadvancesalary",
+              sourceId: createdDay.advance.sourceId,
+              sourceType: "daily-advance",
+            },
+            userId,
+            {
+              sourceModule: "employeeadvancesalary",
+              session,
+            }
+          );
+
+          createdDay.advance.transactionId = transaction._id;
+        }
       }
     }
+
+    // Save attendance first
+    await attendance.save({ session });
+
+    // =========================
+    // PROCESS WEEKLY SALARY
+    // AFTER ATTENDANCE SAVE
+    // =========================
+
+    for (const salaryData of salaryProcessingEmployees) {
+      await processEmployeeWeeklySalary({ ...salaryData, session });
+    }
+
+    result = attendance;
+    });
+
+    return result;
+  } finally {
+    await session.endSession();
   }
-
-  // Save attendance first
-  await attendance.save();
-
-  // =========================
-  // PROCESS WEEKLY SALARY
-  // AFTER ATTENDANCE SAVE
-  // =========================
-
-  for (const salaryData of salaryProcessingEmployees) {
-    await processEmployeeWeeklySalary(salaryData);
-  }
-
-  return attendance;
 };
-
 // =========================
 // GET ALL ATTENDANCE
 // =========================
@@ -446,358 +462,372 @@ const updateEmployeeAttendance = async (
   data,
   userId
 ) => {
+  const session = await mongoose.startSession();
+  let result;
 
-  const attendance =
-    await EmployeeAttendance.findById(
-      attendanceId
-    );
+  try {
+    await session.withTransaction(async () => {
 
-  if (!attendance) {
-    throw new Error(
-      "Employee attendance not found"
-    );
-  }
 
-  /*
-   * Update is expected in this format:
-   *
-   * {
-   *   locationId,
-   *   employeeId,
-   *   date,
-   *   day: {
-   *     punchOut,
-   *     workingHours,
-   *     otApplicable,
-   *     otHours,
-   *     advance,
-   *     remark
-   *   }
-   * }
-   */
+    const attendance =
+      await EmployeeAttendance.findById(
+        attendanceId
+      ).session(session);
 
-  const {
-    locationId,
-    employeeId,
-    date,
-    day,
-  } = data;
-
-  const locationEntry =
-    attendance.locations.find(
-      (item) =>
-        item.locationId.toString() ===
-        locationId.toString()
-    );
-
-  if (!locationEntry) {
-    throw new Error(
-      "Location attendance not found"
-    );
-  }
-
-  const employeeEntry =
-    locationEntry.employees.find(
-      (item) =>
-        item.employeeId.toString() ===
-        employeeId.toString()
-    );
-
-  if (!employeeEntry) {
-    throw new Error(
-      "Employee attendance not found"
-    );
-  }
-
-  const dailyAttendance =
-    employeeEntry.days.find(
-      (item) =>
-        new Date(item.date)
-          .toDateString() ===
-        new Date(date)
-          .toDateString()
-    );
-
-  if (!dailyAttendance) {
-    throw new Error(
-      "Daily attendance not found"
-    );
-  }
-
-  // =========================
-  // UPDATE DAILY DATA
-  // =========================
-
-  if (day.status !== undefined) {
-    dailyAttendance.status =
-      day.status;
-  }
-
-  if (day.workCategory !== undefined) {
-    dailyAttendance.workCategory =
-      day.workCategory;
-  }
-
-  if (day.workLocationId !== undefined) {
-    const location =
-      await Location.findById(
-        day.workLocationId
-      );
-
-    if (!location) {
+    if (!attendance) {
       throw new Error(
-        "Work location not found"
+        "Employee attendance not found"
       );
     }
 
-    dailyAttendance.workLocationId =
-      day.workLocationId;
-  }
+    /*
+     * Update is expected in this format:
+     *
+     * {
+     *   locationId,
+     *   employeeId,
+     *   date,
+     *   day: {
+     *     punchOut,
+     *     workingHours,
+     *     otApplicable,
+     *     otHours,
+     *     advance,
+     *     remark
+     *   }
+     * }
+     */
 
-  if (
-    day.temporaryRelocation !==
-    undefined
-  ) {
-    dailyAttendance.temporaryRelocation =
-      day.temporaryRelocation;
+    const {
+      locationId,
+      employeeId,
+      date,
+      day,
+    } = data;
 
-    if (
-      day.temporaryRelocation &&
-      day.toLocationId
-    ) {
+    const locationEntry =
+      attendance.locations.find(
+        (item) =>
+          item.locationId.toString() ===
+          locationId.toString()
+      );
+
+    if (!locationEntry) {
+      throw new Error(
+        "Location attendance not found"
+      );
+    }
+
+    const employeeEntry =
+      locationEntry.employees.find(
+        (item) =>
+          item.employeeId.toString() ===
+          employeeId.toString()
+      );
+
+    if (!employeeEntry) {
+      throw new Error(
+        "Employee attendance not found"
+      );
+    }
+
+    const dailyAttendance =
+      employeeEntry.days.find(
+        (item) =>
+          new Date(item.date)
+            .toDateString() ===
+          new Date(date)
+            .toDateString()
+      );
+
+    if (!dailyAttendance) {
+      throw new Error(
+        "Daily attendance not found"
+      );
+    }
+
+    // =========================
+    // UPDATE DAILY DATA
+    // =========================
+
+    if (day.status !== undefined) {
+      dailyAttendance.status =
+        day.status;
+    }
+
+    if (day.workCategory !== undefined) {
+      dailyAttendance.workCategory =
+        day.workCategory;
+    }
+
+    if (day.workLocationId !== undefined) {
       const location =
         await Location.findById(
-          day.toLocationId
+          day.workLocationId
         );
 
       if (!location) {
         throw new Error(
-          "Temporary relocation location not found"
+          "Work location not found"
         );
       }
 
-      dailyAttendance.toLocationId =
-        day.toLocationId;
+      dailyAttendance.workLocationId =
+        day.workLocationId;
     }
 
-    if (!day.temporaryRelocation) {
-      dailyAttendance.toLocationId =
-        null;
-    }
-  }
+    if (
+      day.temporaryRelocation !==
+      undefined
+    ) {
+      dailyAttendance.temporaryRelocation =
+        day.temporaryRelocation;
 
-  // Punch In
-  if (day.punchIn !== undefined) {
-    dailyAttendance.punchIn =
-      day.punchIn;
-  }
+      if (
+        day.temporaryRelocation &&
+        day.toLocationId
+      ) {
+        const location =
+          await Location.findById(
+            day.toLocationId
+          ).session(session);
 
-  // Punch Out
-  if (day.punchOut !== undefined) {
-    dailyAttendance.punchOut =
-      day.punchOut;
-  }
-
-  // Working Hours
-  if (day.workingHours !== undefined) {
-    dailyAttendance.workingHours =
-      day.workingHours;
-  }
-
-  // OT
-  if (day.otApplicable !== undefined) {
-    dailyAttendance.otApplicable =
-      day.otApplicable;
-  }
-
-  if (day.otHours !== undefined) {
-    dailyAttendance.otHours =
-      day.otHours;
-  }
-
-  // =========================
-  // ADVANCE UPDATE
-  // =========================
-
-  if (day.advance !== undefined) {
-    const oldAdvanceAmount = Number(
-      dailyAttendance.advance?.amount || 0
-    );
-
-    const newAdvanceAmount =
-      day.advance.amount !== undefined
-        ? Number(day.advance.amount || 0)
-        : oldAdvanceAmount;
-
-    const advanceSourceId =
-      dailyAttendance.advance.sourceId;
-
-    // =========================
-    // 0 -> Greater than 0
-    // CREATE TRANSACTION
-    // =========================
-
-    if (oldAdvanceAmount <= 0 && newAdvanceAmount > 0) {
-      const advanceCategory = await FinanceCategory.findOne({
-        name: "employeeadvancesalary",
-        type: "expense",
-      });
-
-      if (!advanceCategory) {
-        throw new Error(
-          "Employee advance salary expense category not found"
-        );
-      }
-
-      const transaction = await createTransaction(
-        {
-          entryMode: "automatic",
-          type: "expense",
-          categoryId: advanceCategory._id,
-          locationId: dailyAttendance.workLocationId,
-          amount: newAdvanceAmount,
-          transactionDate: new Date(),
-          paymentMethod: "cash",
-          description: `Employee Advance - ${employeeEntry.name}`,
-          sourceModule: "employeeadvancesalary",
-          sourceId: advanceSourceId,
-          sourceType: "daily-advance",
-        },
-        userId,
-        {
-          sourceModule: "employeeadvancesalary",
+        if (!location) {
+          throw new Error(
+            "Temporary relocation location not found"
+          );
         }
+
+        dailyAttendance.toLocationId =
+          day.toLocationId;
+      }
+
+      if (!day.temporaryRelocation) {
+        dailyAttendance.toLocationId =
+          null;
+      }
+    }
+
+    // Punch In
+    if (day.punchIn !== undefined) {
+      dailyAttendance.punchIn =
+        day.punchIn;
+    }
+
+    // Punch Out
+    if (day.punchOut !== undefined) {
+      dailyAttendance.punchOut =
+        day.punchOut;
+    }
+
+    // Working Hours
+    if (day.workingHours !== undefined) {
+      dailyAttendance.workingHours =
+        day.workingHours;
+    }
+
+    // OT
+    if (day.otApplicable !== undefined) {
+      dailyAttendance.otApplicable =
+        day.otApplicable;
+    }
+
+    if (day.otHours !== undefined) {
+      dailyAttendance.otHours =
+        day.otHours;
+    }
+
+    // =========================
+    // ADVANCE UPDATE
+    // =========================
+
+    if (day.advance !== undefined) {
+      const oldAdvanceAmount = Number(
+        dailyAttendance.advance?.amount || 0
       );
 
-      dailyAttendance.advance.transactionId = transaction._id;
-    }
+      const newAdvanceAmount =
+        day.advance.amount !== undefined
+          ? Number(day.advance.amount || 0)
+          : oldAdvanceAmount;
 
-    // =========================
-    // Greater than 0 -> Greater than 0
-    // UPDATE TRANSACTION
-    // =========================
+      const advanceSourceId =
+        dailyAttendance.advance.sourceId;
 
-    if (oldAdvanceAmount > 0 && newAdvanceAmount > 0) {
-      const advanceCategory = await FinanceCategory.findOne({
-        name: "employeeadvancesalary",
-        type: "expense",
-      });
+      // =========================
+      // 0 -> Greater than 0
+      // CREATE TRANSACTION
+      // =========================
 
-      if (!advanceCategory) {
-        throw new Error(
-          "Employee advance salary expense category not found"
-        );
-      }
-
-      // Find existing transaction using transactionId first.
-      // Attendance sourceId may differ from FinanceTransaction sourceId.
-
-      let existingTransaction = null;
-
-      if (dailyAttendance.advance?.transactionId) {
-        existingTransaction = await FinanceTransaction.findOne({
-          _id: dailyAttendance.advance.transactionId,
-          sourceModule: "employeeadvancesalary",
-          isDeleted: false,
-        });
-      }
-
-      // Fallback for older records without transactionId.
-
-      if (!existingTransaction && advanceSourceId) {
-        existingTransaction = await FinanceTransaction.findOne({
-          sourceModule: "employeeadvancesalary",
-          sourceId: advanceSourceId,
-          sourcePaymentId: null,
-          sourceType: "daily-advance",
-          isDeleted: false,
-        });
-      }
-
-      if (!existingTransaction) {
-        throw new Error(
-          "Existing employee advance finance transaction not found"
-        );
-      }
-
-      // Use actual FinanceTransaction sourceId for update.
-
-      const transaction = await updateTransaction(
-        {
-          sourceId: existingTransaction.sourceId,
-          sourcePaymentId: existingTransaction.sourcePaymentId || null,
-          sourceType: existingTransaction.sourceType,
-        },
-        {
+      if (oldAdvanceAmount <= 0 && newAdvanceAmount > 0) {
+        const advanceCategory = await FinanceCategory.findOne({
+          name: "employeeadvancesalary",
           type: "expense",
-          categoryId: advanceCategory._id,
-          locationId: dailyAttendance.workLocationId,
-          amount: newAdvanceAmount,
-          transactionDate: new Date(),
-          paymentMethod: "cash",
-          description: `Employee Advance - ${employeeEntry.name}`,
-        },
-        userId,
-        {
-          sourceModule: "employeeadvancesalary",
+        }).session(session);
+
+        if (!advanceCategory) {
+          throw new Error(
+            "Employee advance salary expense category not found"
+          );
         }
-      );
 
-      dailyAttendance.advance.transactionId = transaction._id;
+        const transaction = await createTransaction(
+          {
+            entryMode: "automatic",
+            type: "expense",
+            categoryId: advanceCategory._id,
+            locationId: dailyAttendance.workLocationId,
+            amount: newAdvanceAmount,
+            transactionDate: new Date(),
+            paymentMethod: "cash",
+            description: `Employee Advance - ${employeeEntry.name}`,
+            sourceModule: "employeeadvancesalary",
+            sourceId: advanceSourceId,
+            sourceType: "daily-advance",
+          },
+          userId,
+          {
+            sourceModule: "employeeadvancesalary",
+            session,
+          }
+        );
+
+        dailyAttendance.advance.transactionId = transaction._id;
+      }
+
+      // =========================
+      // Greater than 0 -> Greater than 0
+      // UPDATE TRANSACTION
+      // =========================
+
+      if (oldAdvanceAmount > 0 && newAdvanceAmount > 0) {
+        const advanceCategory = await FinanceCategory.findOne({
+          name: "employeeadvancesalary",
+          type: "expense",
+        }).session(session);
+
+        if (!advanceCategory) {
+          throw new Error(
+            "Employee advance salary expense category not found"
+          );
+        }
+
+        // Find existing transaction using transactionId first.
+        // Attendance sourceId may differ from FinanceTransaction sourceId.
+
+        let existingTransaction = null;
+
+        if (dailyAttendance.advance?.transactionId) {
+          existingTransaction = await FinanceTransaction.findOne({
+            _id: dailyAttendance.advance.transactionId,
+            sourceModule: "employeeadvancesalary",
+            isDeleted: false,
+          }).session(session);
+        }
+
+        // Fallback for older records without transactionId.
+
+        if (!existingTransaction && advanceSourceId) {
+          existingTransaction = await FinanceTransaction.findOne({
+            sourceModule: "employeeadvancesalary",
+            sourceId: advanceSourceId,
+            sourcePaymentId: null,
+            sourceType: "daily-advance",
+            isDeleted: false,
+          }).session(session);
+        }
+
+        if (!existingTransaction) {
+          throw new Error(
+            "Existing employee advance finance transaction not found"
+          );
+        }
+
+        // Use actual FinanceTransaction sourceId for update.
+
+        const transaction = await updateTransaction(
+          {
+            sourceId: existingTransaction.sourceId,
+            sourcePaymentId: existingTransaction.sourcePaymentId || null,
+            sourceType: existingTransaction.sourceType,
+          },
+          {
+            type: "expense",
+            categoryId: advanceCategory._id,
+            locationId: dailyAttendance.workLocationId,
+            amount: newAdvanceAmount,
+            transactionDate: new Date(),
+            paymentMethod: "cash",
+            description: `Employee Advance - ${employeeEntry.name}`,
+          },
+          userId,
+          {
+            sourceModule: "employeeadvancesalary",
+            session,
+          }
+        );
+
+        dailyAttendance.advance.transactionId = transaction._id;
+      }
+
+      // =========================
+      // UPDATE ADVANCE AMOUNT
+      // =========================
+
+      // New amount is 0:
+      // Keep existing Finance Transaction unchanged.
+
+      dailyAttendance.advance.amount = newAdvanceAmount;
+
+      if (day.advance.remark !== undefined) {
+        dailyAttendance.advance.remark =
+          day.advance.remark || null;
+      }
     }
 
-    // =========================
-    // UPDATE ADVANCE AMOUNT
-    // =========================
-
-    // New amount is 0:
-    // Keep existing Finance Transaction unchanged.
-
-    dailyAttendance.advance.amount = newAdvanceAmount;
-
-    if (day.advance.remark !== undefined) {
-      dailyAttendance.advance.remark =
-        day.advance.remark || null;
+    // Remark
+    if (day.remark !== undefined) {
+      dailyAttendance.remark =
+        day.remark;
     }
-  }
 
-  // Remark
-  if (day.remark !== undefined) {
-    dailyAttendance.remark =
-      day.remark;
-  }
+    // Save attendance first
+    await attendance.save({ session });
 
-  // Save attendance first
-  await attendance.save();
+    // =========================
+    // WEEKLY SALARY TRIGGER
+    // SATURDAY LEAVE OR PUNCH OUT
+    // =========================
 
-  // =========================
-  // WEEKLY SALARY TRIGGER
-  // SATURDAY LEAVE OR PUNCH OUT
-  // =========================
-
-  if (
-    isWeekEndDate(
-      dailyAttendance.date,
-      attendance.weekEndDate
-    ) &&
-    (
-      dailyAttendance.status === "Leave" ||
+    if (
+      isWeekEndDate(
+        dailyAttendance.date,
+        attendance.weekEndDate
+      ) &&
       (
-        dailyAttendance.status !== "Leave" &&
-        Boolean(dailyAttendance.punchOut)
+        dailyAttendance.status === "Leave" ||
+        (
+          dailyAttendance.status !== "Leave" &&
+          Boolean(dailyAttendance.punchOut)
+        )
       )
-    )
-  ) {
-    await processEmployeeWeeklySalary({
-      employeeId,
-      weekStartDate: attendance.weekStartDate,
-      weekEndDate: attendance.weekEndDate,
+    ) {
+      await processEmployeeWeeklySalary({
+        employeeId,
+        weekStartDate: attendance.weekStartDate,
+        weekEndDate: attendance.weekEndDate,
+        session,
+      });
+    }
+
+    result = attendance;
     });
+
+    return result;
+  } finally {
+    await session.endSession();
   }
-
-  return attendance;
 };
-
 // =========================
 // DELETE WEEKLY ATTENDANCE
 // =========================

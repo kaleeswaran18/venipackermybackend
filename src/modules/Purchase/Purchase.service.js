@@ -1,3 +1,4 @@
+const mongoose = require("mongoose");
 const Purchase = require("./Purchase.model");
 
 const Location = require("../locations/location.model");
@@ -37,8 +38,14 @@ const {
 // Validate Location
 // =========================
 
-const validateLocation = async (locationId) => {
-  const location = await Location.findById(locationId);
+const validateLocation = async (locationId, session = null) => {
+  let query = Location.findById(locationId);
+
+  if (session) {
+    query = query.session(session);
+  }
+
+  const location = await query;
 
   if (!location) {
     throw new Error("Location not found");
@@ -55,15 +62,28 @@ const validateReference = async ({
   type,
   category,
   referenceId,
+  session = null,
 }) => {
   if (type === "item") {
-    const itemCategory = await ItemCategory.findById(category);
+    let categoryQuery = ItemCategory.findById(category);
+
+    if (session) {
+      categoryQuery = categoryQuery.session(session);
+    }
+
+    const itemCategory = await categoryQuery;
 
     if (!itemCategory) {
       throw new Error("Item category not found");
     }
 
-    const item = await Item.findById(referenceId);
+    let itemQuery = Item.findById(referenceId);
+
+    if (session) {
+      itemQuery = itemQuery.session(session);
+    }
+
+    const item = await itemQuery;
 
     if (!item) {
       throw new Error("Item not found");
@@ -76,7 +96,13 @@ const validateReference = async ({
   }
 
   if (type === "nail") {
-    const nail = await Nail.findById(referenceId);
+    let nailQuery = Nail.findById(referenceId);
+
+    if (session) {
+      nailQuery = nailQuery.session(session);
+    }
+
+    const nail = await nailQuery;
 
     if (!nail) {
       throw new Error("Nail not found");
@@ -89,9 +115,13 @@ const validateReference = async ({
   }
 
   if (type === "consumable") {
-    const consumable = await Consumable.findById(
-      referenceId
-    );
+    let consumableQuery = Consumable.findById(referenceId);
+
+    if (session) {
+      consumableQuery = consumableQuery.session(session);
+    }
+
+    const consumable = await consumableQuery;
 
     if (!consumable) {
       throw new Error("Consumable not found");
@@ -135,6 +165,7 @@ const findOpeningStock = async ({
   type,
   category,
   referenceId,
+  session = null,
 }) => {
   const query = {
     location,
@@ -146,8 +177,13 @@ const findOpeningStock = async ({
     query.category = category;
   }
 
-  const openingStock =
-    await OpeningStock.findOne(query);
+  let openingStockQuery = OpeningStock.findOne(query);
+
+  if (session) {
+    openingStockQuery = openingStockQuery.session(session);
+  }
+
+  const openingStock = await openingStockQuery;
 
   if (!openingStock) {
     throw new Error(
@@ -165,7 +201,8 @@ const findOpeningStock = async ({
 const updateOpeningStock = async (
   openingStock,
   purchaseData,
-  operation
+  operation,
+  session = null
 ) => {
   const multiplier =
     operation === "add" ? 1 : -1;
@@ -196,7 +233,9 @@ const updateOpeningStock = async (
 
     openingStock.currentStock = newStock;
 
-    await openingStock.save();
+    await openingStock.save(
+      session ? { session } : {}
+    );
 
     return;
   }
@@ -278,7 +317,9 @@ const updateOpeningStock = async (
       newCubicMeter;
   }
 
-  await openingStock.save();
+  await openingStock.save(
+    session ? { session } : {}
+  );
 };
 
 // =========================
@@ -342,7 +383,7 @@ const getCurrentTaxBalance = async () => {
 // Create Purchase Tax
 // =========================
 
-const createPurchaseTax = async (purchase) => {
+const createPurchaseTax = async (purchase, session = null) => {
   const taxAmount =
     Number(purchase.taxAmount) || 0;
 
@@ -351,7 +392,7 @@ const createPurchaseTax = async (purchase) => {
     return null;
   }
 
-  const tax = await Tax.create({
+  const taxData = {
     transactionDate: purchase.purchaseDate,
 
     transactionType: "CREDIT",
@@ -368,7 +409,14 @@ const createPurchaseTax = async (purchase) => {
 
     remarks:
       `Purchase ${purchase.purchaseNo} tax credit`,
-  });
+  };
+
+  if (session) {
+    const [tax] = await Tax.create([taxData], { session });
+    return tax;
+  }
+
+  const tax = await Tax.create(taxData);
 
   return tax;
 };
@@ -382,232 +430,253 @@ const createPurchaseTax = async (purchase) => {
 
 
 const createPurchase = async (data, userId) => {
-  // =========================
-  // Validate location
-  // =========================
+  const session = await mongoose.startSession();
 
-  await validateLocation(data.location);
+  try {
+    let createdPurchase;
 
-  // =========================
-  // Validate item / nail / consumable
-  // =========================
+    await session.withTransaction(async () => {
+      // =========================
+      // Validate location
+      // =========================
 
-  await validateReference({
-    type: data.type,
-    category: data.category,
-    referenceId: data.referenceId,
-  });
+      await validateLocation(data.location, session);
 
-  // =========================
-  // Find Matching Opening Stock
-  // =========================
+      // =========================
+      // Validate item / nail / consumable
+      // =========================
 
-  const openingStock = await findOpeningStock({
-    location: data.location,
-    type: data.type,
-    category: data.category,
-    referenceId: data.referenceId,
-  });
+      await validateReference({
+        type: data.type,
+        category: data.category,
+        referenceId: data.referenceId,
+        session,
+      });
 
-  if (!openingStock) {
-    throw new Error("Opening stock not found");
-  }
+      // =========================
+      // Find Matching Opening Stock
+      // =========================
 
-  // =========================
-  // Capture Old Stock
-  // =========================
+      const openingStock = await findOpeningStock({
+        location: data.location,
+        type: data.type,
+        category: data.category,
+        referenceId: data.referenceId,
+        session,
+      });
 
-  const oldStock = getOpeningStockSnapshot(openingStock);
+      if (!openingStock) {
+        throw new Error("Opening stock not found");
+      }
 
-  // =========================
-  // Calculate Payment Details
-  // =========================
+      // =========================
+      // Capture Old Stock
+      // =========================
 
-  const paidAmount = Number(data.paidAmount || 0);
+      const oldStock = getOpeningStockSnapshot(openingStock);
 
-  const totalAmount = Number(data.totalAmount);
+      // =========================
+      // Calculate Payment Details
+      // =========================
 
-  if (!Number.isFinite(totalAmount) || totalAmount < 0) {
-    throw new Error("Invalid purchase total amount");
-  }
+      const paidAmount = Number(data.paidAmount || 0);
 
-  if (!Number.isFinite(paidAmount) || paidAmount < 0) {
-    throw new Error("Invalid paid amount");
-  }
+      const totalAmount = Number(data.totalAmount);
 
-  if (paidAmount > totalAmount) {
-    throw new Error(
-      "Paid amount cannot exceed total purchase amount"
-    );
-  }
+      if (!Number.isFinite(totalAmount) || totalAmount < 0) {
+        throw new Error("Invalid purchase total amount");
+      }
 
-  const pendingAmount = totalAmount - paidAmount;
+      if (!Number.isFinite(paidAmount) || paidAmount < 0) {
+        throw new Error("Invalid paid amount");
+      }
 
-  const paymentStatus =
-    paidAmount === 0
-      ? "Unpaid"
-      : paidAmount === totalAmount
-      ? "Paid"
-      : "Partially Paid";
+      if (paidAmount > totalAmount) {
+        throw new Error(
+          "Paid amount cannot exceed total purchase amount"
+        );
+      }
 
-  // =========================
-  // Create Payment History
-  // =========================
+      const pendingAmount = totalAmount - paidAmount;
 
-  const paymentHistory =
-    paidAmount > 0
-      ? [
+      const paymentStatus =
+        paidAmount === 0
+          ? "Unpaid"
+          : paidAmount === totalAmount
+          ? "Paid"
+          : "Partially Paid";
+
+      // =========================
+      // Create Payment History
+      // =========================
+
+      const paymentHistory =
+        paidAmount > 0
+          ? [
+              {
+                paymentDate: new Date(),
+                amount: paidAmount,
+                paymentMode: "Cash",
+                remarks: "",
+              },
+            ]
+          : [];
+
+      // =========================
+      // Finance Category
+      // =========================
+
+      let purchaseCategory = null;
+
+      if (paidAmount > 0) {
+        purchaseCategory = await FinanceCategory.findOne({
+          name: "purchase",
+          type: "expense",
+        }).session(session);
+
+        if (!purchaseCategory) {
+          throw new Error(
+            "Purchase finance category not found"
+          );
+        }
+      }
+
+      // =========================
+      // Initial Purchase Snapshot
+      // =========================
+
+      const initialSnapshot = {
+        purchaseNo: data.purchaseNo,
+        purchaseDate: data.purchaseDate,
+        amount: Number(data.amount || 0),
+        taxAmount: Number(data.taxAmount || 0),
+        totalAmount: Number(data.totalAmount || 0),
+      };
+
+      // =========================
+      // Create Purchase
+      // =========================
+
+      const [purchase] = await Purchase.create(
+        [
           {
-            paymentDate: new Date(),
-            amount: paidAmount,
-            paymentMode: "Cash",
-            remarks: "",
+            ...data,
+
+            purchaseNo: data.purchaseNo,
+
+            openingStockId: openingStock._id,
+
+            paymentHistory,
+
+            paidAmount,
+            pendingAmount,
+            paymentStatus,
+
+            initialSnapshot,
           },
-        ]
-      : [];
+        ],
+        { session }
+      );
 
-  // =========================
-  // Finance Category
-  // =========================
+      // =========================
+      // Update Opening Stock
+      // =========================
 
-  let purchaseCategory = null;
+      await updateOpeningStock(
+        openingStock,
+        purchase,
+        "add",
+        session
+      );
 
-  if (paidAmount > 0) {
-    purchaseCategory = await FinanceCategory.findOne({
-      name: "purchase",
-      type: "expense",
+      // =========================
+      // Capture New Stock
+      // =========================
+
+      const newStock = getOpeningStockSnapshot(openingStock);
+
+      // =========================
+      // Save Opening Stock History
+      // =========================
+
+      openingStock.stockHistory.push({
+        oldStock,
+
+        newStock,
+
+        changedQuantity: Number(
+          purchase.quantity || purchase.cft || 0
+        ),
+
+        operation: "PURCHASE_IN",
+
+        referenceId: purchase._id,
+
+        changedBy: userId,
+
+        changedAt: new Date(),
+      });
+
+      await openingStock.save({ session });
+
+      // =========================
+      // Create Purchase Tax CREDIT
+      // =========================
+
+      await createPurchaseTax(purchase, session);
+
+      // =========================
+      // Create Finance Transactions
+      // =========================
+
+      if (paymentHistory.length > 0) {
+        for (const payment of purchase.paymentHistory) {
+          await createTransaction(
+            {
+              entryMode: "automatic",
+
+              type: "expense",
+
+              categoryId: purchaseCategory._id,
+
+              locationId: purchase.location,
+
+              amount: payment.amount,
+
+              transactionDate: payment.paymentDate,
+
+              paymentMethod: "cash",
+
+              description: `Purchase ${purchase.purchaseNo}`,
+
+              sourceModule: "purchase",
+
+              sourceId: purchase._id,
+
+              sourcePaymentId: payment._id,
+
+              sourceType: "purchase",
+            },
+            userId,
+            {
+              sourceModule: "purchase",
+              session,
+            }
+          );
+        }
+      }
+
+      // =========================
+      // Return Purchase
+      // =========================
+
+      createdPurchase = purchase;
     });
 
-    if (!purchaseCategory) {
-      throw new Error(
-        "Purchase finance category not found"
-      );
-    }
+    return createdPurchase;
+  } finally {
+    await session.endSession();
   }
-
-  // =========================
-  // Initial Purchase Snapshot
-  // =========================
-
-  const initialSnapshot = {
-    purchaseNo: data.purchaseNo,
-    purchaseDate: data.purchaseDate,
-    amount: Number(data.amount || 0),
-    taxAmount: Number(data.taxAmount || 0),
-    totalAmount: Number(data.totalAmount || 0),
-  };
-
-  // =========================
-  // Create Purchase
-  // =========================
-
-  const purchase = await Purchase.create({
-    ...data,
-
-    purchaseNo: data.purchaseNo,
-
-    openingStockId: openingStock._id,
-
-    paymentHistory,
-
-    paidAmount,
-    pendingAmount,
-    paymentStatus,
-
-    initialSnapshot,
-  });
-
-  // =========================
-  // Update Opening Stock
-  // =========================
-
-  await updateOpeningStock(
-    openingStock,
-    purchase,
-    "add"
-  );
-
-  // =========================
-  // Capture New Stock
-  // =========================
-
-  const newStock = getOpeningStockSnapshot(openingStock);
-
-  // =========================
-  // Save Opening Stock History
-  // =========================
-
-  openingStock.stockHistory.push({
-    oldStock,
-
-    newStock,
-
-    changedQuantity: Number(
-      purchase.quantity || purchase.cft || 0
-    ),
-
-    operation: "PURCHASE_IN",
-
-    referenceId: purchase._id,
-
-    changedBy: userId,
-
-    changedAt: new Date(),
-  });
-
-  await openingStock.save();
-
-  // =========================
-  // Create Purchase Tax CREDIT
-  // =========================
-
-  await createPurchaseTax(purchase);
-
-  // =========================
-  // Create Finance Transactions
-  // =========================
-
-  if (paymentHistory.length > 0) {
-    for (const payment of purchase.paymentHistory) {
-      await createTransaction(
-        {
-          entryMode: "automatic",
-
-          type: "expense",
-
-          categoryId: purchaseCategory._id,
-
-          locationId: purchase.location,
-
-          amount: payment.amount,
-
-          transactionDate: payment.paymentDate,
-
-          paymentMethod: "cash",
-
-          description: `Purchase ${purchase.purchaseNo}`,
-
-          sourceModule: "purchase",
-
-          sourceId: purchase._id,
-
-          sourcePaymentId: payment._id,
-
-          sourceType: "purchase",
-        },
-        userId,
-        {
-          sourceModule: "purchase",
-        }
-      );
-    }
-  }
-
-  // =========================
-  // Return Purchase
-  // =========================
-
-  return purchase;
 };
 
 
@@ -656,11 +725,17 @@ const getPurchaseById = async (id) => {
 
 
 const updatePurchase = async (id, data, userId) => {
-  // =========================
-  // 1. Find Existing Purchase
-  // =========================
+  const session = await mongoose.startSession();
 
-  const purchase = await Purchase.findById(id);
+  try {
+    let updatedPurchase;
+
+    await session.withTransaction(async () => {
+      // =========================
+      // 1. Find Existing Purchase
+      // =========================
+
+      const purchase = await Purchase.findById(id).session(session);
 
   if (!purchase) {
     throw new Error("Purchase not found");
@@ -757,12 +832,13 @@ const updatePurchase = async (id, data, userId) => {
   // 4. Validate New Data
   // =========================
 
-  await validateLocation(newPurchaseData.location);
+  await validateLocation(newPurchaseData.location, session);
 
   await validateReference({
     type: newPurchaseData.type,
     category: newPurchaseData.category,
     referenceId: newPurchaseData.referenceId,
+    session,
   });
 
   // =========================
@@ -771,7 +847,7 @@ const updatePurchase = async (id, data, userId) => {
 
   const oldOpeningStock = await OpeningStock.findById(
     purchase.openingStockId
-  );
+  ).session(session);
 
   if (!oldOpeningStock) {
     throw new Error("Old opening stock not found");
@@ -786,6 +862,7 @@ const updatePurchase = async (id, data, userId) => {
     type: newPurchaseData.type,
     category: newPurchaseData.category,
     referenceId: newPurchaseData.referenceId,
+    session,
   });
 
   if (!newOpeningStock) {
@@ -1041,6 +1118,7 @@ console.log("PURCHASE HISTORY DEBUG", {
           userId,
           {
             sourceModule: "purchase",
+            session,
           }
         );
       }
@@ -1111,7 +1189,7 @@ console.log("PURCHASE HISTORY DEBUG", {
     purchaseCategory = await FinanceCategory.findOne({
       name: "purchase",
       type: "expense",
-    });
+    }).session(session);
 
     if (!purchaseCategory) {
       throw new Error("Purchase finance category not found");
@@ -1131,7 +1209,8 @@ console.log("PURCHASE HISTORY DEBUG", {
     await updateOpeningStock(
       oldOpeningStock,
       oldPurchaseData,
-      "remove"
+      "remove",
+      session
     );
 
     const oldStockAfterReverse =
@@ -1148,7 +1227,8 @@ console.log("PURCHASE HISTORY DEBUG", {
     await updateOpeningStock(
       newOpeningStock,
       newPurchaseData,
-      "add"
+      "add",
+      session
     );
 
     const newStockAfterApply =
@@ -1173,7 +1253,7 @@ console.log("PURCHASE HISTORY DEBUG", {
         changedAt: new Date(),
       });
 
-      await newOpeningStock.save();
+      await newOpeningStock.save({ session });
     } else {
       oldOpeningStock.stockHistory.push({
         oldStock,
@@ -1191,7 +1271,7 @@ console.log("PURCHASE HISTORY DEBUG", {
         changedAt: new Date(),
       });
 
-      await oldOpeningStock.save();
+      await oldOpeningStock.save({ session });
 
       newOpeningStock.stockHistory.push({
         oldStock: newStockBeforeApply,
@@ -1209,7 +1289,7 @@ console.log("PURCHASE HISTORY DEBUG", {
         changedAt: new Date(),
       });
 
-      await newOpeningStock.save();
+      await newOpeningStock.save({ session });
     }
   }
 
@@ -1362,11 +1442,12 @@ if (purchaseNoChanged) {
       userId,
       {
         sourceModule: "purchase",
+        session,
       }
     );
   }
 }
-  await purchase.save();
+  await purchase.save({ session });
 
   // =========================
   // 20. Update Existing Purchase Tax
@@ -1376,17 +1457,17 @@ if (purchaseNoChanged) {
     sourceType: "Purchase",
     sourceId: purchase._id,
     transactionType: "CREDIT",
-  });
+  }).session(session);
 
   if (purchaseTax) {
     if (newTaxAmount > 0) {
       purchaseTax.taxAmount = newTaxAmount;
-      await purchaseTax.save();
+      await purchaseTax.save({ session });
     } else {
-      await purchaseTax.deleteOne();
+      await purchaseTax.deleteOne({ session });
     }
   } else if (newTaxAmount > 0) {
-    await createPurchaseTax(purchase);
+    await createPurchaseTax(purchase, session);
   }
 
   // =========================
@@ -1414,15 +1495,22 @@ if (purchaseNoChanged) {
       userId,
       {
         sourceModule: "purchase",
+        session,
       }
     );
   }
 
-  // =========================
-  // 22. Return Updated Purchase
-  // =========================
+      // =========================
+      // 22. Return Updated Purchase
+      // =========================
 
-  return purchase;
+      updatedPurchase = purchase;
+    });
+
+    return updatedPurchase;
+  } finally {
+    await session.endSession();
+  }
 };
 
 

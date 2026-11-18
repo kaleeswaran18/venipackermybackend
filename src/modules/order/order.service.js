@@ -1,3 +1,4 @@
+const mongoose = require("mongoose");
 const Order = require("./order.model");
 
 const CustomerDelivery = require("../customerDelivery/customerDelivery.model");
@@ -15,10 +16,14 @@ const SOURCE_TYPE = "individualorderpayment";
 // GENERATE ORDER NUMBER
 // =========================
 
-const generateOrderNo = async () => {
-  const lastOrder = await Order.findOne()
+const generateOrderNo = async (session = null) => {
+  let query = Order.findOne()
     .sort({ createdAt: -1 })
     .select("orderNo");
+
+  if (session) query = query.session(session);
+
+  const lastOrder = await query;
 
   if (!lastOrder) {
     return "ORD001";
@@ -97,7 +102,7 @@ const formatProducts = (products) => {
 // CREATE CUSTOMER DELIVERY
 // =========================
 
-const createCustomerDeliveryFromOrder = async (order) => {
+const createCustomerDeliveryFromOrder = async (order, session = null) => {
   const products = order.products.map(
     (product) => ({
       finishedMaterialCategoryId:
@@ -142,8 +147,7 @@ const createCustomerDeliveryFromOrder = async (order) => {
     })
   );
 
-  const customerDelivery =
-    await CustomerDelivery.create({
+  const customerDeliveryData = {
       deliveryNo:
         `DEL-${order.orderNo}`,
 
@@ -168,7 +172,19 @@ const createCustomerDeliveryFromOrder = async (order) => {
       products,
 
       remarks: "",
-    });
+    };
+
+  let customerDelivery;
+
+  if (session) {
+    const createdDeliveries = await CustomerDelivery.create(
+      [customerDeliveryData],
+      { session }
+    );
+    customerDelivery = createdDeliveries[0];
+  } else {
+    customerDelivery = await CustomerDelivery.create(customerDeliveryData);
+  }
 
   return customerDelivery;
 };
@@ -179,11 +195,14 @@ const createCustomerDeliveryFromOrder = async (order) => {
 // =========================
 
 const updateCustomerDeliveryFromOrder =
-  async (order) => {
-    const customerDelivery =
-      await CustomerDelivery.findOne({
-        orderId: order._id,
-      });
+  async (order, session = null) => {
+    let customerDeliveryQuery = CustomerDelivery.findOne({
+      orderId: order._id,
+    });
+
+    if (session) customerDeliveryQuery = customerDeliveryQuery.session(session);
+
+    const customerDelivery = await customerDeliveryQuery;
 
     // Customer Delivery may not exist
     if (!customerDelivery) {
@@ -288,7 +307,7 @@ const updateCustomerDeliveryFromOrder =
         }
       );
 
-    await customerDelivery.save();
+    await customerDelivery.save(session ? { session } : undefined);
 
     return customerDelivery;
   };
@@ -316,11 +335,15 @@ const getFinancePaymentMethod = (paymentMode) => {
   return method;
 };
 
-const getCustomerDeliveryIncomeCategory = async () => {
-  const category = await FinanceCategory.findOne({
+const getCustomerDeliveryIncomeCategory = async (session = null) => {
+  let categoryQuery = FinanceCategory.findOne({
     name: "customerDelivery",
     type: "income",
   });
+
+  if (session) categoryQuery = categoryQuery.session(session);
+
+  const category = await categoryQuery;
 
   if (!category) {
     throw new Error(
@@ -386,6 +409,7 @@ const syncOrderPaymentToFinance = async ({
   payment,
   categoryId,
   userId,
+  session = null,
 }) => {
   // Bulk Payment has its own single Finance Transaction.
   // Never create an individual Finance entry for a bulk allocation.
@@ -419,6 +443,7 @@ const syncOrderPaymentToFinance = async ({
     userId || null,
     {
       sourceModule: SOURCE_MODULE,
+      ...(session ? { session } : {}),
     }
   );
 };
@@ -428,6 +453,12 @@ const syncOrderPaymentToFinance = async ({
 // =========================
 
 const createOrder = async (data, userId = null) => {
+  const session = await mongoose.startSession();
+
+  try {
+    let result;
+
+    await session.withTransaction(async () => {
   const {
     source,
     enquiryId,
@@ -499,7 +530,7 @@ const createOrder = async (data, userId = null) => {
   // =========================
 
   const orderNo =
-    await generateOrderNo();
+    await generateOrderNo(session);
 
   // =========================
   // VALIDATE INITIAL PAYMENTS
@@ -526,15 +557,14 @@ const createOrder = async (data, userId = null) => {
 
   const customerPaymentCategory =
     initialPayments.length > 0
-      ? await getCustomerDeliveryIncomeCategory()
+      ? await getCustomerDeliveryIncomeCategory(session)
       : null;
 
   // =========================
   // CREATE ORDER
   // =========================
 
-  const order =
-    await Order.create({
+  const orderData = {
       orderNo,
 
       source,
@@ -651,15 +681,16 @@ const createOrder = async (data, userId = null) => {
 
       totalAmount:
         totalAmount ?? 0,
-    });
+    };
+
+  const createdOrders = await Order.create([orderData], { session });
+  const order = createdOrders[0];
 
   // =========================
   // CREATE CUSTOMER DELIVERY
   // =========================
 
-  await createCustomerDeliveryFromOrder(
-    order
-  );
+  await createCustomerDeliveryFromOrder(order, session);
 
   // =========================
   // CREATE FINANCE INCOME
@@ -677,6 +708,7 @@ const createOrder = async (data, userId = null) => {
         payment,
         categoryId: customerPaymentCategory._id,
         userId,
+        session,
       });
     }
   }
@@ -684,7 +716,13 @@ const createOrder = async (data, userId = null) => {
   await order.populate("companyId", "companyName");
   await order.populate("assignedLocation", "name");
 
-  return order;
+  result = order;
+    });
+
+    return result;
+  } finally {
+    await session.endSession();
+  }
 };
 
 // =========================
@@ -731,8 +769,13 @@ const updateOrder = async (
   data,
   userId = null
 ) => {
-  const order =
-    await Order.findById(orderId);
+  const session = await mongoose.startSession();
+
+  try {
+    let result;
+
+    await session.withTransaction(async () => {
+      const order = await Order.findById(orderId).session(session);
 
   if (!order) {
     throw new Error(
@@ -980,7 +1023,7 @@ const updateOrder = async (
 
     if (order.paymentHistory.length > 0) {
       customerPaymentCategory =
-        await getCustomerDeliveryIncomeCategory();
+        await getCustomerDeliveryIncomeCategory(session);
     }
 
     // Payment History is the source of truth
@@ -1015,7 +1058,7 @@ const updateOrder = async (
   // SAVE ORDER
   // =========================
 
-  await order.save();
+  await order.save({ session });
 
   // =========================
   // SYNC FINANCE TRANSACTIONS
@@ -1035,6 +1078,7 @@ const updateOrder = async (
         payment,
         categoryId: customerPaymentCategory._id,
         userId,
+        session,
       });
     }
   }
@@ -1043,14 +1087,18 @@ const updateOrder = async (
   // SYNC CUSTOMER DELIVERY
   // =========================
 
-  await updateCustomerDeliveryFromOrder(
-    order
-  );
+  await updateCustomerDeliveryFromOrder(order, session);
 
   await order.populate("companyId", "companyName");
   await order.populate("assignedLocation", "name");
 
-  return order;
+  result = order;
+    });
+
+    return result;
+  } finally {
+    await session.endSession();
+  }
 };
 
 // =========================
@@ -1060,8 +1108,13 @@ const updateOrder = async (
 const deleteOrder = async (
   orderId
 ) => {
-  const order =
-    await Order.findById(orderId);
+  const session = await mongoose.startSession();
+
+  try {
+    let result;
+
+    await session.withTransaction(async () => {
+      const order = await Order.findById(orderId).session(session);
 
   if (!order) {
     throw new Error(
@@ -1075,17 +1128,15 @@ const deleteOrder = async (
 
   await CustomerDelivery.deleteMany({
     orderId: order._id,
-  });
+  }).session(session);
 
   // =========================
   // DELETE ORDER
   // =========================
 
-  await Order.findByIdAndDelete(
-    orderId
-  );
+  await Order.findByIdAndDelete(orderId).session(session);
 
-  return {
+  result = {
     id: order._id,
 
     orderNo:
@@ -1094,6 +1145,12 @@ const deleteOrder = async (
     message:
       "Order deleted successfully",
   };
+    });
+
+    return result;
+  } finally {
+    await session.endSession();
+  }
 };
 
 // =========================

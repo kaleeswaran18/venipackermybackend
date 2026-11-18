@@ -1,3 +1,4 @@
+const mongoose = require("mongoose");
 const DailyHistory = require("./daily-history.model");
 
 const Location = require("../locations/location.model");
@@ -42,139 +43,81 @@ const Consumable = require(
 // ================================================
 
 const createDailyHistory = async () => {
-  // --------------------------------
-  // STEP 1: Check Today's Record
-  // --------------------------------
+  const session = await mongoose.startSession();
 
-  const today = new Date();
+  try {
+    let result;
 
-  const startOfDay = new Date(today);
-  startOfDay.setHours(0, 0, 0, 0);
+    await session.withTransaction(async () => {
+      // --------------------------------
+      // STEP 1: Check Today's Record
+      // --------------------------------
 
-  const endOfDay = new Date(today);
-  endOfDay.setHours(23, 59, 59, 999);
+      const today = new Date();
 
-  const existingHistory = await DailyHistory.findOne({
-    date: {
-      $gte: startOfDay,
-      $lte: endOfDay,
-    },
-  });
+      const startOfDay = new Date(today);
+      startOfDay.setHours(0, 0, 0, 0);
 
-  // --------------------------------
-  // STEP 2: Stop If Already Exists
-  // --------------------------------
+      const endOfDay = new Date(today);
+      endOfDay.setHours(23, 59, 59, 999);
 
-  if (existingHistory) {
-    return existingHistory;
-  }
-
-  // --------------------------------
-  // STEP 3: Create DailyHistory
-  // --------------------------------
-
-  const dailyHistory = await DailyHistory.create({
-    date: new Date(),
-    attendance: [],
-    production: [],
-    consumption: [],
-    customerDelivery: [],
-    updates: [],
-    updatesHistory: [],
-  });
-
-  const dailyHistoryId = dailyHistory._id;
-
-  // --------------------------------
-  // STEP 4: Attendance
-  // --------------------------------
-
-  await createAttendance(dailyHistoryId);
-
-  // --------------------------------
-  // STEP 5: Production
-  // --------------------------------
-
-  await createProduction(dailyHistoryId);
-
-  // --------------------------------
-  // STEP 6: Consumption
-  // --------------------------------
-
-  await createConsumption(dailyHistoryId);
-
-  // --------------------------------
-  // STEP 7: Return DailyHistory
-  // --------------------------------
-
-  return await DailyHistory.findById(dailyHistoryId);
-};
-
-
-// ================================================
-// ATTENDANCE
-// ================================================
-
-const createAttendance = async (dailyHistoryId) => {
-  // --------------------------------
-  // STEP 1: Get all locations
-  // --------------------------------
-
-  const locations = await Location.find()
-    .select("_id name")
-    .lean();
-
-  // --------------------------------
-  // STEP 2: Create attendance data
-  // --------------------------------
-
-  const attendanceData = locations.map((location) => ({
-    locationId: location._id,
-    workersPresent: 0,
-    workerDetails: "",
-  }));
-
-  // --------------------------------
-  // STEP 3: Find DailyHistory
-  // and update attendance
-  // --------------------------------
-
-  const dailyHistory =
-    await DailyHistory.findByIdAndUpdate(
-      dailyHistoryId,
-      {
-        $set: {
-          attendance: attendanceData,
+      const existingHistory = await DailyHistory.findOne({
+        date: {
+          $gte: startOfDay,
+          $lte: endOfDay,
         },
-      },
-      {
-        new: true,
-        runValidators: true,
+      }).session(session);
+
+      // --------------------------------
+      // STEP 2: Stop If Already Exists
+      // --------------------------------
+
+      if (existingHistory) {
+        result = existingHistory;
+        return;
       }
-    );
 
-  // --------------------------------
-  // STEP 4: Check DailyHistory
-  // --------------------------------
+      // --------------------------------
+      // STEP 3: Create DailyHistory
+      // --------------------------------
 
-  if (!dailyHistory) {
-    const error = new Error(
-      "Daily history not found"
-    );
+      const [dailyHistory] = await DailyHistory.create([{
+        date: new Date(),
+        attendance: [],
+        production: [],
+        consumption: [],
+        customerDelivery: [],
+        updates: [],
+        updatesHistory: [],
+      }], { session });
 
-    error.statusCode = 404;
+      const dailyHistoryId = dailyHistory._id;
 
-    throw error;
+      // --------------------------------
+      // STEP 4: Production
+      // --------------------------------
+
+      await createProduction(dailyHistoryId, session);
+
+      // --------------------------------
+      // STEP 5: Consumption
+      // --------------------------------
+
+      await createConsumption(dailyHistoryId, session);
+
+      // --------------------------------
+      // STEP 6: Return DailyHistory
+      // --------------------------------
+
+      result = await DailyHistory.findById(dailyHistoryId).session(session);
+    });
+
+    return result;
+  } finally {
+    await session.endSession();
   }
-
-  // --------------------------------
-  // STEP 5: Return attendance
-  // --------------------------------
-
-  return dailyHistory.attendance;
 };
 
-
 // ================================================
 // PRODUCTION
 // ================================================
@@ -183,13 +126,14 @@ const createAttendance = async (dailyHistoryId) => {
 // PRODUCTION
 // ================================================
 
-const createProduction = async (dailyHistoryId) => {
+const createProduction = async (dailyHistoryId, session = null) => {
   // --------------------------------
   // STEP 1: Get all locations
   // --------------------------------
 
   const locations = await Location.find()
     .select("_id name")
+    .session(session)
     .lean();
 
   // --------------------------------
@@ -198,6 +142,7 @@ const createProduction = async (dailyHistoryId) => {
 
   const categories = await FinishedMaterial.find()
     .select("_id name")
+    .session(session)
     .lean();
 
   // --------------------------------
@@ -219,6 +164,7 @@ const createProduction = async (dailyHistoryId) => {
           categoryId: category._id,
         })
           .select("_id name categoryId")
+          .session(session)
           .lean();
 
       const categoryFields =
@@ -226,6 +172,7 @@ const createProduction = async (dailyHistoryId) => {
           categoryId: category._id,
         })
           .select("_id key name")
+          .session(session)
           .lean();
 
       // --------------------------------
@@ -283,6 +230,7 @@ const createProduction = async (dailyHistoryId) => {
       {
         new: true,
         runValidators: true,
+        session,
       }
     );
 
@@ -316,7 +264,7 @@ const createProduction = async (dailyHistoryId) => {
 // CONSUMPTION
 // ================================================
 
-const createConsumption = async (dailyHistoryId) => {
+const createConsumption = async (dailyHistoryId, session = null) => {
   // --------------------------------
   // STEP 1: Get Opening Stock
   // --------------------------------
@@ -326,6 +274,7 @@ const createConsumption = async (dailyHistoryId) => {
       "location type category referenceId quantity unit cft cubicMeter pieces"
     )
     .populate("category", "_id name")
+    .session(session)
     .lean();
 
   const consumptionMap = new Map();
@@ -441,6 +390,7 @@ const createConsumption = async (dailyHistoryId) => {
       {
         new: true,
         runValidators: true,
+        session,
       }
     );
 
@@ -1044,294 +994,67 @@ const updateDailyHistory = async (
   data,
   userId
 ) => {
-  console.log("updateDailyHistory called with data:", dailyHistoryId,"dailyHistoryId",data,"userId",userId);
-  // ==========================================
-  // ATTENDANCE
-  // ==========================================
+  const session = await mongoose.startSession();
 
-  if (data.type === "attendance") {
-    await updateAttendance(
-      dailyHistoryId,
-      data,
-      userId
-    );
-  }
+  try {
+    await session.withTransaction(async () => {
+      // ==========================================
+      // PRODUCTION
+      // ==========================================
 
-  // ==========================================
-  // PRODUCTION
-  // ==========================================
+      if (data.type === "production") {
+        await updateProduction(
+          dailyHistoryId,
+          data,
+          userId,
+          session
+        );
+      }
 
-  if (data.type === "production") {
-    await updateProduction(
-      dailyHistoryId,
-      data,
-      userId
-    );
-  }
+      // ==========================================
+      // CONSUMPTION
+      // ==========================================
 
-  // ==========================================
-  // CONSUMPTION
-  // ==========================================
+      if (data.section === "consumption") {
+        await updateConsumption(
+          dailyHistoryId,
+          data,
+          userId,
+          session
+        );
+      }
 
-  if (data.section === "consumption") {
-    await updateConsumption(
-      dailyHistoryId,
-      data,
-      userId
-    );
-  }
+      // ==========================================
+      // CUSTOMER DELIVERY
+      // ==========================================
 
-  // ==========================================
-  // CUSTOMER DELIVERY
-  // ==========================================
-
-  if (data.type === "customer_delivery") {
-    await updateCustomerDelivery(
-      dailyHistoryId,
-      data,
-      userId
-    );
-  }
-
-  // ==========================================
-  // RETURN UPDATED DAILY HISTORY
-  // ==========================================
-
-  return await DailyHistory.findById(
-    dailyHistoryId
-  );
-};
-const updateAttendance = async (
-  dailyHistoryId,
-  data,
-  userId
-) => {
-  // --------------------------------
-  // STEP 1: Find DailyHistory
-  // --------------------------------
-
-  const dailyHistory =
-    await DailyHistory.findById(dailyHistoryId);
-
-  if (!dailyHistory) {
-    const error = new Error(
-      "Daily history not found"
-    );
-
-    error.statusCode = 404;
-
-    throw error;
-  }
-
-  // --------------------------------
-  // STEP 2: Get attendance data
-  // --------------------------------
-
-  const {
-    updateId,
-    locationId,
-    workersPresent,
-    workerDetails,
-  } = data;
-
-  // --------------------------------
-  // STEP 3: Find location attendance
-  // --------------------------------
-
-  const attendance =
-    dailyHistory.attendance.find(
-      (item) =>
-        item.locationId.toString() ===
-        locationId.toString()
-    );
-
-  if (!attendance) {
-    const error = new Error(
-      "Attendance for this location not found"
-    );
-
-    error.statusCode = 404;
-
-    throw error;
-  }
-
-  // --------------------------------
-  // STEP 4: Common new data
-  // --------------------------------
-
-  const newData = {
-    workersPresent,
-    workerDetails: workerDetails || "",
-  };
-
-  // --------------------------------
-  // STEP 5: CREATE
-  // --------------------------------
-
-  if (!updateId) {
-    // Update current attendance
-    attendance.workersPresent =
-      workersPresent;
-
-    attendance.workerDetails =
-      workerDetails || "";
-
-    // Create current update record
-    const updateRecord =
-      dailyHistory.updates.create({
-        type: "attendance",
-
-        locationId,
-
-        updatedBy: userId,
-
-        updatedAt: new Date(),
-
-        data: newData,
-      });
-
-    dailyHistory.updates.push(
-      updateRecord
-    );
-
-    // --------------------------------
-    // Create audit history
-    // --------------------------------
-
-    dailyHistory.updatesHistory.push({
-      type: "attendance",
-
-      action: "created",
-
-      updateId: updateRecord._id,
-
-      locationId,
-
-      updatedBy: userId,
-
-      updatedAt: new Date(),
-
-      newData,
+      if (data.type === "customer_delivery") {
+        await updateCustomerDelivery(
+          dailyHistoryId,
+          data,
+          userId
+        );
+      }
     });
+
+    return await DailyHistory.findById(dailyHistoryId);
+  } finally {
+    await session.endSession();
   }
-
-  // --------------------------------
-  // STEP 6: UPDATE
-  // --------------------------------
-
-  else {
-    const attendanceUpdate =
-      dailyHistory.updates.find(
-        (update) =>
-          update._id.toString() ===
-            updateId.toString() &&
-          update.type === "attendance"
-      );
-
-    if (!attendanceUpdate) {
-      const error = new Error(
-        "Attendance update record not found"
-      );
-
-      error.statusCode = 404;
-
-      throw error;
-    }
-
-    // --------------------------------
-    // Validate location
-    // --------------------------------
-
-    if (
-      attendanceUpdate.locationId.toString() !==
-      locationId.toString()
-    ) {
-      const error = new Error(
-        "Attendance update location does not match"
-      );
-
-      error.statusCode = 400;
-
-      throw error;
-    }
-
-    // --------------------------------
-    // Save old data for history
-    // --------------------------------
-
-    const oldData = {
-      ...(attendanceUpdate.data || {}),
-    };
-
-    // --------------------------------
-    // Update current attendance
-    // --------------------------------
-
-    attendance.workersPresent =
-      workersPresent;
-
-    attendance.workerDetails =
-      workerDetails || "";
-
-    // --------------------------------
-    // Update current update record
-    // --------------------------------
-
-    attendanceUpdate.data =
-      newData;
-
-    attendanceUpdate.updatedBy =
-      userId;
-
-    attendanceUpdate.updatedAt =
-      new Date();
-
-    // --------------------------------
-    // Create audit history
-    // --------------------------------
-
-    dailyHistory.updatesHistory.push({
-      type: "attendance",
-
-      action: "updated",
-
-      updateId: attendanceUpdate._id,
-
-      locationId,
-
-      updatedBy: userId,
-
-      updatedAt: new Date(),
-
-      oldData,
-
-      newData,
-    });
-  }
-
-  // --------------------------------
-  // STEP 7: Save DailyHistory
-  // --------------------------------
-
-  await dailyHistory.save();
-
-  // --------------------------------
-  // STEP 8: Return updated DailyHistory
-  // --------------------------------
-
-  return dailyHistory;
 };
+
 const updateProduction = async (
   dailyHistoryId,
   data,
-  userId
+  userId,
+  session = null
 ) => {
   // --------------------------------
   // STEP 1: Find DailyHistory
   // --------------------------------
 
   const dailyHistory =
-    await DailyHistory.findById(dailyHistoryId);
+    await DailyHistory.findById(dailyHistoryId).session(session);
 
   if (!dailyHistory) {
     const error = new Error(
@@ -1465,7 +1188,7 @@ const updateProduction = async (
       locationId,
       categoryId,
       productId,
-    });
+    }).session(session);
 
   if (!stock) {
     const error = new Error(
@@ -1821,13 +1544,13 @@ const updateProduction = async (
     "updatesHistory"
   );
 
-  await dailyHistory.save();
+  await dailyHistory.save({ session });
 
   // --------------------------------
   // STEP 21: Save stock
   // --------------------------------
 
-  await stock.save();
+  await stock.save({ session });
 
   // --------------------------------
   // STEP 22: Return
@@ -1842,10 +1565,11 @@ const updateProduction = async (
 const updateConsumption = async (
   dailyHistoryId,
   data,
-  userId
+  userId,
+  session = null
 ) => {
   const dailyHistory =
-    await DailyHistory.findById(dailyHistoryId);
+    await DailyHistory.findById(dailyHistoryId).session(session);
 
   if (!dailyHistory) {
     const error = new Error(
@@ -1928,7 +1652,7 @@ const updateConsumption = async (
   }
 
   const openingStock =
-    await OpeningStock.findOne(stockQuery);
+    await OpeningStock.findOne(stockQuery).session(session);
 
   if (!openingStock) {
     const error = new Error(
@@ -2768,9 +2492,9 @@ const updateConsumption = async (
   // SAVE
   // ==================================================
 
-  await openingStock.save();
+  await openingStock.save({ session });
 
-  await dailyHistory.save();
+  await dailyHistory.save({ session });
 
   // ==================================================
   // RETURN
@@ -2802,4 +2526,5 @@ module.exports = {
   getTodayDailyHistory,
   updateDailyHistory,
   getDailyHistories,
+  updateCustomerDelivery
 };

@@ -1,4 +1,5 @@
 
+const mongoose = require("mongoose");
 const Location = require("./location.model");
 
 const dailyHistoryService = require(
@@ -40,27 +41,32 @@ const PieceSize = require("../piece-size/piece-size.model");
 // INITIALIZE OPENING STOCK FOR NEW LOCATION
 // ========================================
 
-const initializeOpeningStockForLocation = async (locationId) => {
+const initializeOpeningStockForLocation = async (locationId, session = null) => {
   const [categories, items, nails, consumables, pieceSizes] =
     await Promise.all([
       ItemCategory.find({ isActive: true })
         .select("_id name")
+        .session(session)
         .lean(),
 
       Item.find()
         .select("_id name")
+        .session(session)
         .lean(),
 
       Nail.find({ isActive: true })
         .select("_id name")
+        .session(session)
         .lean(),
 
       Consumable.find({ isActive: true })
         .select("_id name")
+        .session(session)
         .lean(),
 
       PieceSize.find()
         .select("_id width inch height")
+        .session(session)
         .lean(),
     ]);
 
@@ -70,6 +76,7 @@ const initializeOpeningStockForLocation = async (locationId) => {
     location: { $ne: locationId },
   })
     .select("type category referenceId unit")
+    .session(session)
     .lean();
 
   const unitByKey = new Map();
@@ -227,7 +234,7 @@ const initializeOpeningStockForLocation = async (locationId) => {
 
   const result = await OpeningStock.bulkWrite(
     operations,
-    { ordered: false }
+    { ordered: false, session }
   );
 
   return result.upsertedCount || 0;
@@ -239,74 +246,97 @@ const initializeOpeningStockForLocation = async (locationId) => {
 // ========================================
 
 const createLocation = async ({ name }) => {
-  const existingLocation = await Location.findOne({
-    name,
-  });
-
-  if (existingLocation) {
-    throw new Error("Location already exists");
-  }
-
-  // 1. Create Location
-  const location = await Location.create({
-    name,
-  });
-
-  // 2. Check today's Daily History
-  let dailyHistory = null;
+  const session = await mongoose.startSession();
 
   try {
-    dailyHistory =
-      await dailyHistoryService.getTodayDailyHistory();
-  } catch (error) {
-    // Daily History not found - skip remaining processes
-    if (error.statusCode === 404) {
-      return {
+    let response;
+
+    await session.withTransaction(async () => {
+      const existingLocation = await Location.findOne({
+        name,
+      }).session(session);
+
+      if (existingLocation) {
+        throw new Error("Location already exists");
+      }
+
+      // 1. Create Location
+      const [location] = await Location.create(
+        [{ name }],
+        { session }
+      );
+
+      // 2. Check today's Daily History
+      let dailyHistory = null;
+
+      try {
+        dailyHistory =
+          await dailyHistoryService.getTodayDailyHistory();
+      } catch (error) {
+        // Daily History not found - skip remaining processes
+        if (error.statusCode === 404) {
+          response = {
+            location,
+            dailyHistoryId: null,
+            message:
+              "Location created successfully. Daily History not found. Initialization skipped.",
+          };
+          return;
+        }
+
+        // Other errors should not be ignored
+        throw error;
+      }
+
+      // Safety check
+      if (!dailyHistory?._id) {
+        response = {
+          location,
+          dailyHistoryId: null,
+          message:
+            "Location created successfully. Daily History not found. Initialization skipped.",
+        };
+        return;
+      }
+
+      const dailyHistoryId = dailyHistory._id;
+
+      // 3. Create missing Opening Stock records
+      await initializeOpeningStockForLocation(
+        location._id,
+        session
+      );
+
+      // 4. Add Production
+      await addLocationToProduction(
+        dailyHistoryId,
+        location._id,
+        session
+      );
+
+      // 5. Add Consumption from Opening Stock
+      await addLocationToConsumption(
+        dailyHistoryId,
+        location._id,
+        session
+      );
+
+      // 6. Create Overall Stock
+      await addLocationToOverallStock(
+        location._id,
+        session
+      );
+
+      response = {
         location,
-        dailyHistoryId: null,
-        message:
-          "Location created successfully. Daily History not found. Initialization skipped.",
+        dailyHistoryId,
       };
-    }
+    });
 
-    // Other errors should not be ignored
-    throw error;
+    return response;
+  } finally {
+    await session.endSession();
   }
-
-  // Safety check
-  if (!dailyHistory?._id) {
-    return {
-      location,
-      dailyHistoryId: null,
-      message:
-        "Location created successfully. Daily History not found. Initialization skipped.",
-    };
-  }
-
-  const dailyHistoryId = dailyHistory._id;
-
-  // 3. Create missing Opening Stock records
-  await initializeOpeningStockForLocation(location._id);
-
-  // 4. Add Production
-  await addLocationToProduction(
-    dailyHistoryId,
-    location._id
-  );
-
-  // 5. Add Consumption from Opening Stock
-  await addLocationToConsumption(
-    dailyHistoryId,
-    location._id
-  );
-
-  // 6. Create Overall Stock
-  await addLocationToOverallStock(location._id);
-
-  return {
-    location,
-    dailyHistoryId,
-  };
 };
 
 
@@ -316,10 +346,11 @@ const createLocation = async ({ name }) => {
 
 const addLocationToProduction = async (
   dailyHistoryId,
-  locationId
+  locationId,
+  session = null
 ) => {
   const dailyHistory =
-    await DailyHistory.findById(dailyHistoryId);
+    await DailyHistory.findById(dailyHistoryId).session(session);
 
   if (!dailyHistory) {
     const error = new Error("Daily history not found");
@@ -360,6 +391,7 @@ const addLocationToProduction = async (
 
   const categories = await FinishedMaterial.find()
     .select("_id name")
+    .session(session)
     .lean();
 
   for (const categoryInfo of categories) {
@@ -367,12 +399,14 @@ const addLocationToProduction = async (
       categoryId: categoryInfo._id,
     })
       .select("_id name categoryId")
+      .session(session)
       .lean();
 
     const categoryFields = await CategoryField.find({
       categoryId: categoryInfo._id,
     })
       .select("_id key name")
+      .session(session)
       .lean();
 
     const fieldKeys = categoryFields
@@ -455,7 +489,7 @@ const addLocationToProduction = async (
 
   if (isModified) {
     dailyHistory.markModified("production");
-    await dailyHistory.save();
+    await dailyHistory.save({ session });
   }
 
   return dailyHistory.production;
@@ -466,15 +500,17 @@ const addLocationToProduction = async (
 // ADD LOCATION TO OVERALL STOCK
 // ========================================
 
-const addLocationToOverallStock = async (locationId) => {
+const addLocationToOverallStock = async (locationId, session = null) => {
   const categories = await FinishedMaterial.find()
     .select("_id name")
+    .session(session)
     .lean();
 
   const existingStocks = await OverallStock.find({
     locationId,
   })
     .select("categoryId productId")
+    .session(session)
     .lean();
 
   const existingKeys = new Set(
@@ -491,6 +527,7 @@ const addLocationToOverallStock = async (locationId) => {
       categoryId: category._id,
     })
       .select("_id name categoryId")
+      .session(session)
       .lean();
 
     const categoryFields = await CategoryField.find({
@@ -499,6 +536,7 @@ const addLocationToOverallStock = async (locationId) => {
     })
       .sort({ order: 1 })
       .select("_id key name")
+      .session(session)
       .lean();
 
     const values = {};
@@ -535,7 +573,8 @@ const addLocationToOverallStock = async (locationId) => {
   }
 
   const createdStocks = await OverallStock.insertMany(
-    stockRecords
+    stockRecords,
+    { session }
   );
 
   return createdStocks.length;
@@ -547,50 +586,67 @@ const addLocationToOverallStock = async (locationId) => {
 // ========================================
 
 const syncLocationData = async (locationId) => {
-  const location = await Location.findById(locationId);
+  const session = await mongoose.startSession();
 
-  if (!location) {
-    const error = new Error("Location not found");
-    error.statusCode = 404;
-    throw error;
+  try {
+    let response;
+
+    await session.withTransaction(async () => {
+      const location = await Location.findById(locationId).session(session);
+
+      if (!location) {
+        const error = new Error("Location not found");
+        error.statusCode = 404;
+        throw error;
+      }
+
+      const todayHistory =
+        await dailyHistoryService.getTodayDailyHistory();
+
+      if (!todayHistory?._id) {
+        const error = new Error(
+          "Today's Daily History not found"
+        );
+
+        error.statusCode = 404;
+        throw error;
+      }
+
+      // Add missing Opening Stock records too
+      await initializeOpeningStockForLocation(
+        location._id,
+        session
+      );
+
+      await addLocationToProduction(
+        todayHistory._id,
+        location._id,
+        session
+      );
+
+      await addLocationToConsumption(
+        todayHistory._id,
+        location._id,
+        session
+      );
+
+      const overallStockCreated =
+        await addLocationToOverallStock(location._id, session);
+
+      response = {
+        location: {
+          _id: location._id,
+          name: location.name,
+        },
+        dailyHistoryId: todayHistory._id,
+        overallStockCreated,
+      };
+    });
+
+    return response;
+  } finally {
+    await session.endSession();
   }
-
-  const todayHistory =
-    await dailyHistoryService.getTodayDailyHistory();
-
-  if (!todayHistory?._id) {
-    const error = new Error(
-      "Today's Daily History not found"
-    );
-
-    error.statusCode = 404;
-    throw error;
-  }
-
-  // Add missing Opening Stock records too
-  await initializeOpeningStockForLocation(location._id);
-
-  await addLocationToProduction(
-    todayHistory._id,
-    location._id
-  );
-
-  await addLocationToConsumption(
-    todayHistory._id,
-    location._id
-  );
-
-  const overallStockCreated =
-    await addLocationToOverallStock(location._id);
-
-  return {
-    location: {
-      _id: location._id,
-      name: location.name,
-    },
-    dailyHistoryId: todayHistory._id,
-    overallStockCreated,
-  };
 };
 
 
@@ -600,10 +656,11 @@ const syncLocationData = async (locationId) => {
 
 const addLocationToConsumption = async (
   dailyHistoryId,
-  locationId
+  locationId,
+  session = null
 ) => {
   const dailyHistory =
-    await DailyHistory.findById(dailyHistoryId);
+    await DailyHistory.findById(dailyHistoryId).session(session);
 
   if (!dailyHistory) {
     const error = new Error("Daily history not found");
@@ -649,6 +706,7 @@ const addLocationToConsumption = async (
       "location type category referenceId quantity unit cft cubicMeter pieces"
     )
     .populate("category", "_id name")
+    .session(session)
     .lean();
 
   const existingKeys = new Set(
@@ -716,7 +774,7 @@ const addLocationToConsumption = async (
 
   if (isModified) {
     dailyHistory.markModified("consumption");
-    await dailyHistory.save();
+    await dailyHistory.save({ session });
   }
 
   return dailyHistory.consumption;
@@ -789,48 +847,63 @@ const updateLocation = async (
 // ========================================
 
 const deleteLocation = async (locationId) => {
-  const location = await Location.findById(locationId);
+  const session = await mongoose.startSession();
 
-  if (!location) {
-    throw new Error("Location not found");
+  try {
+    let response;
+
+    await session.withTransaction(async () => {
+      const location = await Location.findById(locationId).session(session);
+
+      if (!location) {
+        throw new Error("Location not found");
+      }
+
+      const dailyHistory =
+        await dailyHistoryService.getTodayDailyHistory();
+
+      const dailyHistoryId = dailyHistory._id;
+
+      await Location.findByIdAndDelete(locationId).session(session);
+
+      // Attendance is optional
+      const hasAttendance = (
+        dailyHistory.attendance || []
+      ).some(
+        (item) =>
+          item.locationId?.toString() === location._id.toString()
+      );
+
+      if (hasAttendance) {
+        await deleteLocationFromAttendance(
+          dailyHistoryId,
+          location._id,
+          session
+        );
+      }
+
+      await deleteLocationFromProduction(
+        dailyHistoryId,
+        location._id,
+        session
+      );
+
+      await deleteLocationFromConsumption(
+        dailyHistoryId,
+        location._id,
+        session
+      );
+
+      response = {
+        id: location._id,
+        message: "Location deleted successfully",
+      };
+    });
+
+    return response;
+  } finally {
+    await session.endSession();
   }
-
-  const dailyHistory =
-    await dailyHistoryService.getTodayDailyHistory();
-
-  const dailyHistoryId = dailyHistory._id;
-
-  await Location.findByIdAndDelete(locationId);
-
-  // Attendance is optional
-  const hasAttendance = (
-    dailyHistory.attendance || []
-  ).some(
-    (item) =>
-      item.locationId?.toString() === location._id.toString()
-  );
-
-  if (hasAttendance) {
-    await deleteLocationFromAttendance(
-      dailyHistoryId,
-      location._id
-    );
-  }
-
-  await deleteLocationFromProduction(
-    dailyHistoryId,
-    location._id
-  );
-
-  await deleteLocationFromConsumption(
-    dailyHistoryId,
-    location._id
-  );
-
-  return {
-    id: location._id,
-    message: "Location deleted successfully",
-  };
 };
 
 
@@ -840,10 +913,11 @@ const deleteLocation = async (locationId) => {
 
 const deleteLocationFromAttendance = async (
   dailyHistoryId,
-  locationId
+  locationId,
+  session = null
 ) => {
   const dailyHistory =
-    await DailyHistory.findById(dailyHistoryId);
+    await DailyHistory.findById(dailyHistoryId).session(session);
 
   if (!dailyHistory) {
     const error = new Error("Daily history not found");
@@ -872,7 +946,7 @@ const deleteLocationFromAttendance = async (
         item.locationId.toString() !== locationId.toString()
     );
 
-  await dailyHistory.save();
+  await dailyHistory.save({ session });
 
   return dailyHistory.attendance;
 };
@@ -884,10 +958,11 @@ const deleteLocationFromAttendance = async (
 
 const deleteLocationFromProduction = async (
   dailyHistoryId,
-  locationId
+  locationId,
+  session = null
 ) => {
   const dailyHistory =
-    await DailyHistory.findById(dailyHistoryId);
+    await DailyHistory.findById(dailyHistoryId).session(session);
 
   if (!dailyHistory) {
     const error = new Error("Daily history not found");
@@ -916,7 +991,7 @@ const deleteLocationFromProduction = async (
         item.locationId.toString() !== locationId.toString()
     );
 
-  await dailyHistory.save();
+  await dailyHistory.save({ session });
 
   return dailyHistory.production;
 };
@@ -928,10 +1003,11 @@ const deleteLocationFromProduction = async (
 
 const deleteLocationFromConsumption = async (
   dailyHistoryId,
-  locationId
+  locationId,
+  session = null
 ) => {
   const dailyHistory =
-    await DailyHistory.findById(dailyHistoryId);
+    await DailyHistory.findById(dailyHistoryId).session(session);
 
   if (!dailyHistory) {
     const error = new Error("Daily history not found");
@@ -960,7 +1036,7 @@ const deleteLocationFromConsumption = async (
         item.locationId.toString() !== locationId.toString()
     );
 
-  await dailyHistory.save();
+  await dailyHistory.save({ session });
 
   return dailyHistory.consumption;
 };

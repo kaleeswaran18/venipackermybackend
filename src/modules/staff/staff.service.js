@@ -22,6 +22,26 @@ const loginRoles = [
 ];
 
 // ==========================================
+// MONGODB TRANSACTION HELPER
+// ==========================================
+
+const withTransaction = async (callback) => {
+  const session = await mongoose.startSession();
+
+  try {
+    let result;
+
+    await session.withTransaction(async () => {
+      result = await callback(session);
+    });
+
+    return result;
+  } finally {
+    await session.endSession();
+  }
+};
+
+// ==========================================
 // DATE HELPERS
 // ==========================================
 
@@ -188,7 +208,7 @@ const ensureMonthlyAttendance = (staff, month, year) => {
 // CREATE STAFF
 // ==========================================
 
-const createStaff = async (data) => {
+const createStaff = async (data) => withTransaction(async (session) => {
   const {
     staffName,
     phoneNumber,
@@ -207,7 +227,7 @@ const createStaff = async (data) => {
   // Check duplicate phone number
   const existingStaff = await Staff.findOne({
     phoneNumber,
-  });
+  }).session(session);
 
   if (existingStaff) {
     throw new Error("Phone number already exists");
@@ -223,7 +243,7 @@ const createStaff = async (data) => {
 
     const existingUser = await User.findOne({
       email: normalizedEmail,
-    });
+    }).session(session);
 
     if (existingUser) {
       throw new Error("Email already exists");
@@ -231,7 +251,7 @@ const createStaff = async (data) => {
   }
 
   // Create Staff
-  const staff = await Staff.create({
+  const staff = new Staff({
     staffName,
     phoneNumber,
     monthlySalary,
@@ -244,33 +264,30 @@ const createStaff = async (data) => {
     userId: null,
   });
 
+  await staff.save({ session });
+
   // Create User only for login roles
   if (shouldCreateUser) {
-    try {
-      const hashedPassword = await bcrypt.hash(password, 10);
+    const hashedPassword = await bcrypt.hash(password, 10);
 
-      const user = await User.create({
-        name: staffName,
-        email: email.toLowerCase(),
-        password: hashedPassword,
-        role: normalizedStaffType,
-        staffId: staff._id,
-      });
+    const user = new User({
+      name: staffName,
+      email: email.toLowerCase(),
+      password: hashedPassword,
+      role: normalizedStaffType,
+      staffId: staff._id,
+    });
 
-      // Link User with Staff
-      staff.userId = user._id;
+    await user.save({ session });
 
-      await staff.save();
-    } catch (error) {
-      // Rollback Staff if User creation fails
-      await Staff.findByIdAndDelete(staff._id);
+    // Link User with Staff
+    staff.userId = user._id;
 
-      throw error;
-    }
+    await staff.save({ session });
   }
 
   return staff;
-};
+});
 
 // ==========================================
 // GET ALL STAFF
@@ -319,12 +336,12 @@ const getStaffById = async (id) => {
 // UPDATE STAFF
 // ==========================================
 
-const updateStaff = async (id, data) => {
+const updateStaff = async (id, data) => withTransaction(async (session) => {
   if (!mongoose.Types.ObjectId.isValid(id)) {
     throw new Error("Invalid Staff ID");
   }
 
-  const staff = await Staff.findById(id);
+  const staff = await Staff.findById(id).session(session);
 
   if (!staff) {
     throw new Error("Staff not found");
@@ -338,7 +355,7 @@ const updateStaff = async (id, data) => {
     const existingStaff = await Staff.findOne({
       phoneNumber: data.phoneNumber,
       _id: { $ne: id },
-    });
+    }).session(session);
 
     if (existingStaff) {
       throw new Error("Phone number already exists");
@@ -365,26 +382,28 @@ const updateStaff = async (id, data) => {
 
   // Update linked User name
   if (staff.userId && data.staffName) {
-    await User.findByIdAndUpdate(staff.userId, {
-      name: data.staffName,
-    });
+    await User.findByIdAndUpdate(
+      staff.userId,
+      { name: data.staffName },
+      { session }
+    );
   }
 
-  await staff.save();
+  await staff.save({ session });
 
   return staff;
-};
+});
 
 // ==========================================
 // DELETE STAFF (SOFT DELETE)
 // ==========================================
 
-const deleteStaff = async (id) => {
+const deleteStaff = async (id) => withTransaction(async (session) => {
   if (!mongoose.Types.ObjectId.isValid(id)) {
     throw new Error("Invalid Staff ID");
   }
 
-  const staff = await Staff.findById(id);
+  const staff = await Staff.findById(id).session(session);
 
   if (!staff) {
     throw new Error("Staff not found");
@@ -392,24 +411,26 @@ const deleteStaff = async (id) => {
 
   // Deactivate linked User
   if (staff.userId) {
-    await User.findByIdAndUpdate(staff.userId, {
-      isActive: false,
-    });
+    await User.findByIdAndUpdate(
+      staff.userId,
+      { isActive: false },
+      { session }
+    );
   }
 
   staff.status = "Inactive";
 
-  await staff.save();
+  await staff.save({ session });
 
   return staff;
-};
+});
 
 // ==========================================
 // GENERATE MONTHLY ATTENDANCE
 // ==========================================
 
 
-const generateMonthlyAttendance = async (month, year) => {
+const generateMonthlyAttendance = async (month, year) => withTransaction(async (session) => {
   if (
     !Number.isInteger(Number(month)) ||
     !Number.isInteger(Number(year)) ||
@@ -425,7 +446,7 @@ const generateMonthlyAttendance = async (month, year) => {
 
   const activeStaff = await Staff.find({
     status: "Active",
-  });
+  }).session(session);
 
   let createdCount = 0;
   let skippedCount = 0;
@@ -460,7 +481,7 @@ const generateMonthlyAttendance = async (month, year) => {
       updatedCount++;
     }
 
-    await staff.save();
+    await staff.save({ session });
   }
 
   return {
@@ -473,7 +494,7 @@ const generateMonthlyAttendance = async (month, year) => {
     totalDays: monthlyRecord?.attendance.length || 0,
     createdRecords,
   };
-};
+});
 // ==========================================
 // UPDATE MONTHLY SALARY PAYMENT
 // ==========================================
@@ -490,7 +511,7 @@ const existingPaymentHistoryAction = (
 
   return "CREATED";
 };
-const updateMonthlyPayment = async (staffId, data, userId) => {
+const updateMonthlyPayment = async (staffId, data, userId) => withTransaction(async (session) => {
   if (!mongoose.Types.ObjectId.isValid(staffId)) {
     throw new Error("Invalid Staff ID");
   }
@@ -536,7 +557,7 @@ const updateMonthlyPayment = async (staffId, data, userId) => {
     paidAt = null;
   }
 
-  const staff = await Staff.findById(staffId);
+  const staff = await Staff.findById(staffId).session(session);
 
   if (!staff) {
     throw new Error("Staff not found");
@@ -593,7 +614,7 @@ const updateMonthlyPayment = async (staffId, data, userId) => {
     const staffSalaryCategory = await FinanceCategory.findOne({
       name: "staffsalary",
       type: "expense",
-    });
+    }).session(session);
 
     if (!staffSalaryCategory) {
       throw new Error(
@@ -613,7 +634,7 @@ const updateMonthlyPayment = async (staffId, data, userId) => {
         sourceId: staff._id,
         sourceType: SOURCE_TYPE,
         isDeleted: false,
-      });
+      }).session(session);
 
     const transactionDate =
       monthlyRecord.paidAt || new Date();
@@ -651,6 +672,7 @@ const updateMonthlyPayment = async (staffId, data, userId) => {
         userId,
         {
           sourceModule: SOURCE_MODULE,
+          session,
         }
       );
 
@@ -662,6 +684,7 @@ const updateMonthlyPayment = async (staffId, data, userId) => {
         userId,
         {
           sourceModule: SOURCE_MODULE,
+          session,
         }
       );
 
@@ -672,7 +695,7 @@ const updateMonthlyPayment = async (staffId, data, userId) => {
           sourceId: staff._id,
           sourceType: SOURCE_TYPE,
           isDeleted: false,
-        });
+        }).session(session);
 
       if (!createdTransaction) {
         throw new Error(
@@ -713,7 +736,7 @@ const updateMonthlyPayment = async (staffId, data, userId) => {
     changedAt: new Date(),
   });
 
-  await staff.save();
+  await staff.save({ session });
 
   return {
     staffId: staff._id,
@@ -726,7 +749,7 @@ const updateMonthlyPayment = async (staffId, data, userId) => {
     financeTransactionId: monthlyRecord.financeTransactionId,
     paymentHistory: monthlyRecord.paymentHistory,
   };
-};
+});
 
 // ==========================================
 // UPDATE DAILY ATTENDANCE
@@ -735,14 +758,14 @@ const updateMonthlyPayment = async (staffId, data, userId) => {
 
 
 
-const updateAttendance = async (staffId, data, userId) => {
+const updateAttendance = async (staffId, data, userId) => withTransaction(async (session) => {
   console.log("SERVICE DATA:", data.advances);
 
   if (!mongoose.Types.ObjectId.isValid(staffId)) {
     throw new Error("Invalid Staff ID");
   }
 
-  const staff = await Staff.findById(staffId);
+  const staff = await Staff.findById(staffId).session(session);
 
   if (!staff) {
     throw new Error("Staff not found");
@@ -880,7 +903,7 @@ const updateAttendance = async (staffId, data, userId) => {
     const staffAdvanceCategory = await FinanceCategory.findOne({
       name: "staffadvancesalary",
       type: "expense",
-    });
+    }).session(session);
 
     if (!staffAdvanceCategory) {
       throw new Error(
@@ -1052,7 +1075,7 @@ const updateAttendance = async (staffId, data, userId) => {
         existingTransaction = await FinanceTransaction.findOne({
           _id: financeTransactionId,
           isDeleted: false,
-        });
+        }).session(session);
       }
 
       // Priority 3: Find using source identifiers
@@ -1065,7 +1088,7 @@ const updateAttendance = async (staffId, data, userId) => {
           sourceId: staff._id,
           sourcePaymentId: advanceId,
           isDeleted: false,
-        });
+        }).session(session);
       }
 
       // ======================================
@@ -1156,13 +1179,14 @@ const updateAttendance = async (staffId, data, userId) => {
           userId,
           {
             sourceModule: SOURCE_MODULE,
+            session,
           }
         );
 
         existingTransaction = await FinanceTransaction.findOne({
           _id: existingTransaction._id,
           isDeleted: false,
-        });
+        }).session(session);
 
       } else {
 
@@ -1173,6 +1197,7 @@ const updateAttendance = async (staffId, data, userId) => {
           userId,
           {
             sourceModule: SOURCE_MODULE,
+            session,
           }
         );
 
@@ -1182,7 +1207,7 @@ const updateAttendance = async (staffId, data, userId) => {
           sourcePaymentId: advanceId,
           sourceType,
           isDeleted: false,
-        });
+        }).session(session);
       }
 
       if (!existingTransaction) {
@@ -1268,7 +1293,7 @@ const updateAttendance = async (staffId, data, userId) => {
   // SAVE STAFF DOCUMENT
   // ==========================================
 
-  await staff.save();
+  await staff.save({ session });
 
   return {
     staffId: staff._id,
@@ -1279,7 +1304,7 @@ const updateAttendance = async (staffId, data, userId) => {
     totalDaysInMonth: monthlyRecord.attendance.length,
     attendance: attendanceRecord,
   };
-};
+});
 
 
 
