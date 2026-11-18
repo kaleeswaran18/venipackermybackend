@@ -15,6 +15,21 @@ const DailyHistory = require(
 
 
 // ----------------------------------------
+// HELPER: DUPLICATE PIECE SIZE ERROR
+// ----------------------------------------
+
+const createDuplicateError = (data) => {
+  const error = new Error(
+    `Piece Size already exists (${data.width} × ${data.height} × ${data.inch})`
+  );
+
+  error.statusCode = 409;
+
+  return error;
+};
+
+
+// ----------------------------------------
 // HELPER: FIND NEW ITEM CATEGORY
 // ----------------------------------------
 
@@ -22,6 +37,48 @@ const getNewItemCategory = async () => {
   return await ItemCategory.findOne({
     name: "newitem",
   });
+};
+
+
+// ----------------------------------------
+// HELPER: CHECK DUPLICATE PIECE SIZE
+// ----------------------------------------
+
+const checkDuplicatePieceSize = async (
+  data,
+  excludeId = null
+) => {
+  const query = {
+    width: Number(data.width),
+    height: Number(data.height),
+    inch: Number(data.inch),
+  };
+
+  // Exclude current record during update
+  if (excludeId) {
+    query._id = {
+      $ne: excludeId,
+    };
+  }
+
+  const existingPieceSize = await PieceSize.findOne(query);
+
+  if (existingPieceSize) {
+    throw createDuplicateError(data);
+  }
+};
+
+
+// ----------------------------------------
+// HELPER: HANDLE MONGODB DUPLICATE ERROR
+// ----------------------------------------
+
+const handleDuplicateKeyError = (error, data) => {
+  if (error.code === 11000) {
+    throw createDuplicateError(data);
+  }
+
+  throw error;
 };
 
 
@@ -73,8 +130,8 @@ const addPieceSizeToDailyHistory = async (
         item.pieces.push({
           pieceSizeId: pieceSize._id,
           width: pieceSize.width,
+          height: pieceSize.height,
           inch: pieceSize.inch,
-          feet: pieceSize.feet,
           count: 0,
         });
 
@@ -130,8 +187,8 @@ const updatePieceSizeInDailyHistory = async (
         }
 
         piece.width = pieceSize.width;
+        piece.height = pieceSize.height;
         piece.inch = pieceSize.inch;
-        piece.feet = pieceSize.feet;
 
         // Existing count is not changed
         isModified = true;
@@ -206,23 +263,32 @@ const deletePieceSizeFromDailyHistory = async (
 // ----------------------------------------
 
 const createPieceSize = async (data) => {
-  // 1. Create Piece Size
-  const pieceSize = await PieceSize.create(data);
+  // 1. Check Duplicate
+  await checkDuplicatePieceSize(data);
 
-  // 2. Find New Item category
+  let pieceSize;
+
+  try {
+    // 2. Create Piece Size
+    pieceSize = await PieceSize.create(data);
+  } catch (error) {
+    handleDuplicateKeyError(error, data);
+  }
+
+  // 3. Find New Item category
   const newItemCategory = await getNewItemCategory();
 
   if (!newItemCategory) {
     return pieceSize;
   }
 
-  // 3. Find New Item OpeningStocks
+  // 4. Find New Item OpeningStocks
   const openingStocks = await OpeningStock.find({
     type: "item",
     category: newItemCategory._id,
   });
 
-  // 4. Add new piece to OpeningStock
+  // 5. Add new piece to OpeningStock
   for (const openingStock of openingStocks) {
     if (!Array.isArray(openingStock.pieces)) {
       openingStock.pieces = [];
@@ -241,15 +307,15 @@ const createPieceSize = async (data) => {
     openingStock.pieces.push({
       pieceSizeId: pieceSize._id,
       width: pieceSize.width,
+      height: pieceSize.height,
       inch: pieceSize.inch,
-      feet: pieceSize.feet,
       count: 0,
     });
 
     await openingStock.save();
   }
 
-  // 5. Add to all existing DailyHistory Consumption
+  // 6. Add to all existing DailyHistory Consumption
   await addPieceSizeToDailyHistory(
     newItemCategory._id,
     pieceSize
@@ -300,19 +366,36 @@ const updatePieceSize = async (id, data) => {
     throw error;
   }
 
-  // 2. Update Piece Size Master
+  // 2. Prepare updated values
+  const updatedData = {
+    width: data.width ?? pieceSize.width,
+    height: data.height ?? pieceSize.height,
+    inch: data.inch ?? pieceSize.inch,
+  };
+
+  // 3. Check Duplicate (Exclude Current ID)
+  await checkDuplicatePieceSize(
+    updatedData,
+    id
+  );
+
+  // 4. Update Piece Size Master
   Object.assign(pieceSize, data);
 
-  await pieceSize.save();
+  try {
+    await pieceSize.save();
+  } catch (error) {
+    handleDuplicateKeyError(error, updatedData);
+  }
 
-  // 3. Find New Item category
+  // 5. Find New Item category
   const newItemCategory = await getNewItemCategory();
 
   if (!newItemCategory) {
     return pieceSize;
   }
 
-  // 4. Update OpeningStock
+  // 6. Update OpeningStock
   const openingStocks = await OpeningStock.find({
     type: "item",
     category: newItemCategory._id,
@@ -330,14 +413,14 @@ const updatePieceSize = async (id, data) => {
     }
 
     piece.width = pieceSize.width;
+    piece.height = pieceSize.height;
     piece.inch = pieceSize.inch;
-    piece.feet = pieceSize.feet;
 
     // count untouched
     await openingStock.save();
   }
 
-  // 5. Update DailyHistory Consumption
+  // 7. Update DailyHistory Consumption
   await updatePieceSizeInDailyHistory(pieceSize);
 
   return pieceSize;

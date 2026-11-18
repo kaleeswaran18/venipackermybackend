@@ -9,7 +9,7 @@ const createPieceSizeSchema = Joi.object({
     .min(0)
     .required(),
 
-  feet: Joi.number()
+  height: Joi.number()
     .min(0)
     .required(),
 });
@@ -21,7 +21,7 @@ const updatePieceSizeSchema = Joi.object({
   inch: Joi.number()
     .min(0),
 
-  feet: Joi.number()
+  height: Joi.number()
     .min(0),
 }).min(1);
 

@@ -1,3 +1,4 @@
+
 const Joi = require("joi");
 
 // CREATE VEHICLE EXPENSE
@@ -62,11 +63,36 @@ const updateVehicleExpenseSchema = Joi.object({
     .min(0)
     .optional(),
 
+  // OTHER AMOUNT
+  otherAmount: Joi.number()
+    .min(0)
+    .optional(),
+
+  // OTHER REMARK DESCRIPTION
+  remarkDescription: Joi.array()
+    .items(
+      Joi.object({
+        description: Joi.string()
+          .trim()
+          .allow("")
+          .required(),
+
+        amount: Joi.number()
+          .min(0)
+          .required(),
+      })
+    )
+    .optional(),
+
   status: Joi.string()
     .valid(
       "In Progress",
       "Completed"
     )
+    .optional(),
+
+  reason: Joi.string()
+    .allow("")
     .optional(),
 });
 

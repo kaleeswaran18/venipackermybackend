@@ -70,7 +70,7 @@ const createPurchaseSchema = Joi.object({
           .min(0)
           .required(),
 
-        feet: Joi.number()
+        height: Joi.number()
           .min(0)
           .required(),
 
@@ -251,7 +251,7 @@ const updatePurchaseSchema = Joi.object({
           .min(0)
           .required(),
 
-        feet: Joi.number()
+        height: Joi.number()
           .min(0)
           .required(),
 

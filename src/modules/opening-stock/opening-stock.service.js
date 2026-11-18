@@ -63,8 +63,9 @@ const createOpeningStock = async (data) => {
         pieces = pieceSizes.map((pieceSize) => ({
           pieceSizeId: pieceSize._id,
           width: pieceSize.width,
+          height: pieceSize.height,
           inch: pieceSize.inch,
-          feet: pieceSize.feet,
+          
           count: 0,
         }));
       }
@@ -405,8 +406,8 @@ const updateOpeningStockPiece = async (
     piece.inch = data.inch;
   }
 
-  if (data.feet !== undefined) {
-    piece.feet = data.feet;
+  if (data.height !== undefined) {
+    piece.height = data.height;
   }
 
   if (data.count !== undefined) {

@@ -1,7 +1,31 @@
 
 const mongoose = require("mongoose");
 
-// Change History Schema
+// ==========================================
+// REMARK DESCRIPTION SCHEMA
+// ==========================================
+
+const remarkDescriptionSchema = new mongoose.Schema(
+  {
+    description: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+
+    amount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+  },
+  { _id: true }
+);
+
+// ==========================================
+// CHANGE HISTORY SCHEMA
+// ==========================================
+
 const changeHistorySchema = new mongoose.Schema(
   {
     changedBy: {
@@ -40,6 +64,10 @@ const changeHistorySchema = new mongoose.Schema(
   },
   { _id: true }
 );
+
+// ==========================================
+// VEHICLE EXPENSE SCHEMA
+// ==========================================
 
 const vehicleExpenseSchema = new mongoose.Schema(
   {
@@ -83,11 +111,38 @@ const vehicleExpenseSchema = new mongoose.Schema(
       min: 0,
     },
 
+    // ======================================
+    // DIESEL AMOUNT
+    // ======================================
+
     diesel: {
       type: Number,
       default: 0,
       min: 0,
     },
+
+    // ======================================
+    // OTHER AMOUNT
+    // ======================================
+
+    otherAmount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    // ======================================
+    // OTHER AMOUNT REMARK DESCRIPTION
+    // ======================================
+
+    remarkDescription: {
+      type: [remarkDescriptionSchema],
+      default: [],
+    },
+
+    // ======================================
+    // STATUS
+    // ======================================
 
     status: {
       type: String,
@@ -96,20 +151,29 @@ const vehicleExpenseSchema = new mongoose.Schema(
       required: true,
     },
 
-    // Record Created By
+    // ======================================
+    // RECORD CREATED BY
+    // ======================================
+
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
     },
 
-    // Last Updated By
+    // ======================================
+    // LAST UPDATED BY
+    // ======================================
+
     updatedBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       default: null,
     },
 
-    // Complete Change History
+    // ======================================
+    // COMPLETE CHANGE HISTORY
+    // ======================================
+
     changeHistory: {
       type: [changeHistorySchema],
       default: [],
@@ -119,6 +183,10 @@ const vehicleExpenseSchema = new mongoose.Schema(
     timestamps: true,
   }
 );
+
+// ==========================================
+// EXPORT MODEL
+// ==========================================
 
 module.exports = mongoose.model(
   "VehicleExpense",

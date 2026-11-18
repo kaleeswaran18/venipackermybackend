@@ -388,7 +388,7 @@ const createConsumption = async (dailyHistoryId) => {
             pieceSizeId: piece.pieceSizeId,
             width: piece.width,
             inch: piece.inch,
-            feet: piece.feet,
+            height: piece.height,
             count: 0,
           }));
         } else {

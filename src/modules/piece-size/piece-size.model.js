@@ -1,3 +1,4 @@
+
 const mongoose = require("mongoose");
 
 const pieceSizeSchema = new mongoose.Schema(
@@ -8,13 +9,13 @@ const pieceSizeSchema = new mongoose.Schema(
       min: 0,
     },
 
-    inch: {
+    height: {
       type: Number,
       required: true,
       min: 0,
     },
 
-    feet: {
+    inch: {
       type: Number,
       required: true,
       min: 0,
@@ -22,6 +23,20 @@ const pieceSizeSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
+  }
+);
+
+// Prevent duplicate Piece Sizes
+pieceSizeSchema.index(
+  {
+    width: 1,
+    height: 1,
+    inch: 1,
+  
+  },
+  {
+    unique: true,
+    name: "unique_piece_size",
   }
 );
 

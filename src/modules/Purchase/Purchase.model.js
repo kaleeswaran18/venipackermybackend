@@ -98,7 +98,7 @@ const purchaseSchema = new mongoose.Schema(
           min: 0,
         },
 
-        feet: {
+        height: {
           type: Number,
           required: true,
           min: 0,

@@ -142,7 +142,7 @@ const addProductToDailyHistoryProduction = async (
 const createOverallStock = async (data) => {
   const { categoryId, productId } = data;
 
-  // Check product
+  // 1. Check product
   const product =
     await FinishedMaterialProduct.findOne({
       _id: productId,
@@ -158,7 +158,7 @@ const createOverallStock = async (data) => {
     throw error;
   }
 
-  // Check duplicate category + product
+  // 2. Check duplicate category + product
   const existingStock =
     await OverallStock.findOne({
       categoryId,
@@ -174,21 +174,21 @@ const createOverallStock = async (data) => {
     throw error;
   }
 
-  // Get active category fields
+  // 3. Get active category fields
   const categoryFields =
     await CategoryField.find({
       categoryId,
       isActive: true,
     }).sort({ order: 1 });
 
-  // Create dynamic values
+  // 4. Create dynamic values
   const values = {};
 
   categoryFields.forEach((field) => {
     values[field.key] = 0;
   });
 
-  // Get all active locations
+  // 5. Get all active locations
   const locations = await Location.find({
     isActive: true,
   });
@@ -203,18 +203,29 @@ const createOverallStock = async (data) => {
   }
 
   // ----------------------------------------
-  // PREPARE TODAY'S DAILY HISTORY PRODUCTION
+  // 6. PREPARE TODAY'S DAILY HISTORY PRODUCTION
   // ----------------------------------------
 
-  const dailyHistory =
-    await addProductToDailyHistoryProduction(
-      categoryId,
-      productId,
-      categoryFields
-    );
+  let dailyHistory = null;
+
+  try {
+    dailyHistory =
+      await addProductToDailyHistoryProduction(
+        categoryId,
+        productId,
+        categoryFields
+      );
+  } catch (error) {
+    // Daily History not found - skip production update
+    if (error.statusCode !== 404) {
+      throw error;
+    }
+
+    dailyHistory = null;
+  }
 
   // ----------------------------------------
-  // CREATE ONE STOCK RECORD FOR EACH LOCATION
+  // 7. CREATE ONE STOCK RECORD FOR EACH LOCATION
   // ----------------------------------------
 
   const stockRecords = locations.map((location) => ({
@@ -227,21 +238,21 @@ const createOverallStock = async (data) => {
   }));
 
   const createdStocks =
-    await OverallStock.insertMany(
-      stockRecords
-    );
+    await OverallStock.insertMany(stockRecords);
 
   // ----------------------------------------
-  // SAVE DAILY HISTORY
+  // 8. SAVE DAILY HISTORY IF AVAILABLE
   // ----------------------------------------
 
-  await dailyHistory.save();
+  if (dailyHistory) {
+    await dailyHistory.save();
+  }
 
   // ----------------------------------------
-  // RETURN WITH POPULATED DATA
+  // 9. RETURN WITH POPULATED DATA
   // ----------------------------------------
 
-  return await OverallStock.find({
+  const result = await OverallStock.find({
     _id: {
       $in: createdStocks.map(
         (stock) => stock._id
@@ -254,6 +265,8 @@ const createOverallStock = async (data) => {
       "name companyName"
     )
     .populate("locationId", "name");
+
+  return result;
 };
 
 

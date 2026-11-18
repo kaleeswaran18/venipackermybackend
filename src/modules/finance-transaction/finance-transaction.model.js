@@ -65,7 +65,7 @@ const financeTransactionSchema = new mongoose.Schema(
     amount: {
       type: Number,
       required: true,
-      min: [0.01, "Amount must be greater than zero"],
+      min: [0, "Amount must be greater than zero"],
     },
 
     // Transaction Description
@@ -105,7 +105,7 @@ const financeTransactionSchema = new mongoose.Schema(
     // Automatic Transaction Source Details
     sourceModule: {
       type: String,
-      enum: ["purchase", "customer_delivery", "property",'vehicle-expense','staffsalary','staffadvancesalary','employeeadvancesalary',"individualorderpayment",'bulkorderpayment','other'],
+      enum: ["purchase", "customer_delivery", "property",'vehicle-expense','staffsalary','staffadvancesalary','employeeadvancesalary',"individualorderpayment",'bulkorderpayment','other',"contract-work"],
       required: function () {
         return this.entryMode === "automatic";
       },

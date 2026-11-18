@@ -121,7 +121,7 @@ const getOpeningStockSnapshot = (openingStock) => {
       pieceSizeId: piece.pieceSizeId,
       width: piece.width,
       inch: piece.inch,
-      feet: piece.feet,
+      height: piece.height,
       count: piece.count,
     })),
   };
@@ -688,7 +688,7 @@ const updatePurchase = async (id, data, userId) => {
       pieceSizeId: normalizeId(piece.pieceSizeId),
       width: Number(piece.width || 0),
       inch: Number(piece.inch || 0),
-      feet: Number(piece.feet || 0),
+      height: Number(piece.height || 0),
       count: Number(piece.count || 0),
     }));
 
@@ -709,7 +709,7 @@ const updatePurchase = async (id, data, userId) => {
       pieceSizeId: piece.pieceSizeId,
       width: piece.width,
       inch: piece.inch,
-      feet: piece.feet,
+      height: piece.height,
       count: piece.count,
     })),
   };

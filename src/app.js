@@ -9,6 +9,9 @@ const consumableRoutes = require("./modules/consumables/consumable.routes");
 const finishedMaterialRoutes = require(
   "./modules/finished-materials/finishedMaterial.routes"
 );
+const nailPackingRoutes = require(
+  "./modules/nail-packing/nail-packing.routes"
+);
 const stockTransferRoutes = require("./modules/stock-transfer/stock-transfer.routes");
 const TaxRoutes = require("./modules/tax/tax.routes");
 const stockTransactionRoutes = require(
@@ -18,6 +21,7 @@ const companyRoutes = require("./modules/company/company.routes");
 const financeCategoryRoutes = require(
   "./modules/finance-category/finance-category.routes"
 );
+const dailyLogRoutes = require("./modules/daily-logs/daily-log.routes");
 const bulkPaymentRoutes = require(
   "./modules/customerDelivery/bulkPayment.routes"
 );
@@ -62,7 +66,7 @@ const purchaseRoutes = require(
 const vehicleExpenseRoutes = require(
   "./modules/VehicleExpense/VehicleExpense.routes"
 );
-
+const contractWorkRoutes = require("./modules/contract-work/contract-work.routes");
 const pieceSizeRoutes = require("./modules/piece-size/piece-size.routes");
 const itemCategoryRoutes = require("./modules/item-categories/item-category.routes");
 const propertyRoutes = require("./modules/property/property.routes");
@@ -117,6 +121,7 @@ app.use("/api/auth", authRoutes);
 app.use("/api/items", itemRoutes);
 app.use("/api/nails", nailRoutes);
 app.use("/api/consumables", consumableRoutes);
+app.use("/api/nail-packing", nailPackingRoutes);
 app.use(
   "/api/customer-delivery/bulk-payment",
   bulkPaymentRoutes
@@ -125,10 +130,12 @@ app.use(
   "/api/stock-transactions",
   stockTransactionRoutes
 );
+app.use("/api/daily-logs", dailyLogRoutes);
 app.use(
   "/api/finance-categories",
   financeCategoryRoutes
 );
+app.use("/api/contract-work", contractWorkRoutes);
 app.use(
   "/api/finance-transactions",
   financeTransactionRoutes

@@ -53,12 +53,12 @@ const openingStockSchema = new mongoose.Schema(
           required: true,
           min: 0,
         },
-        inch: {
+        height: {
           type: Number,
           required: true,
           min: 0,
         },
-        feet: {
+        inch: {
           type: Number,
           required: true,
           min: 0,

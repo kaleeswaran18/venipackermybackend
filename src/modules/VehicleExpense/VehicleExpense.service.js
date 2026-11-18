@@ -14,6 +14,7 @@ const {
 // FINANCE SOURCE DETAILS
 const SOURCE_MODULE = "vehicle-expense";
 const SOURCE_TYPE = "vehicle-expense";
+const OTHER_SOURCE_TYPE = "vehicle-expense-other";
 
 // CREATE VEHICLE EXPENSE
 const createVehicleExpense = async (data, userId) => {
@@ -42,6 +43,11 @@ const createVehicleExpense = async (data, userId) => {
     endKms: null,
     totalKms: null,
     diesel: 0,
+
+    // Other Expense Defaults
+    otherAmount: 0,
+    remarkDescription: [],
+
     status: "In Progress",
 
     createdBy: userId,
@@ -70,7 +76,6 @@ const getVehicleExpenseById = async (id) => {
 
 
 // UPDATE VEHICLE EXPENSE
-
 const updateVehicleExpense = async (
   id,
   data,
@@ -101,9 +106,75 @@ const updateVehicleExpense = async (
       ? Number(data.diesel)
       : existingExpense.diesel;
 
+  // OTHER AMOUNT
+  const otherAmount =
+    data.otherAmount !== undefined
+      ? Number(data.otherAmount)
+      : existingExpense.otherAmount ?? 0;
+
+  // Safely get existing remark descriptions
+  // Old database records may not have this field
+  const currentRemarkDescription = Array.isArray(
+    existingExpense.remarkDescription
+  )
+    ? existingExpense.remarkDescription
+    : [];
+
+  const remarkDescription =
+    data.remarkDescription !== undefined
+      ? data.remarkDescription
+      : currentRemarkDescription.map((item) => ({
+          description: item.description ?? "",
+          amount: Number(item.amount ?? 0),
+        }));
+
   // Validate Diesel
   if (!Number.isFinite(diesel) || diesel < 0) {
     throw new Error("Invalid diesel amount.");
+  }
+
+  // Validate Other Amount
+  if (
+    !Number.isFinite(otherAmount) ||
+    otherAmount < 0
+  ) {
+    throw new Error("Invalid other amount.");
+  }
+
+  // Validate Remark Description
+  if (!Array.isArray(remarkDescription)) {
+    throw new Error("Invalid remark description.");
+  }
+
+  let remarkTotal = 0;
+
+  for (const item of remarkDescription) {
+    const description = String(
+      item.description ?? ""
+    ).trim();
+
+    const amount = Number(item.amount);
+
+    if (!Number.isFinite(amount) || amount < 0) {
+      throw new Error(
+        "Invalid amount in remark description."
+      );
+    }
+
+    if (!description && amount > 0) {
+      throw new Error(
+        "Description is required for remark amount."
+      );
+    }
+
+    remarkTotal += amount;
+  }
+
+  // Allow small floating-point differences
+  if (Math.abs(remarkTotal - otherAmount) > 0.01) {
+    throw new Error(
+      "Remark description total must equal Other Amount."
+    );
   }
 
   // COMPLETED
@@ -161,7 +232,7 @@ const updateVehicleExpense = async (
     throw new Error("Invalid vehicle expense status.");
   }
 
-  // Prepare updated values
+  // PREPARE UPDATED VALUES
   const updatedData = {
     date: data.date ?? existingExpense.date,
     vehicle: data.vehicle ?? existingExpense.vehicle,
@@ -170,6 +241,8 @@ const updateVehicleExpense = async (
     endKms,
     totalKms,
     diesel,
+    otherAmount,
+    remarkDescription,
     status,
   };
 
@@ -182,13 +255,19 @@ const updateVehicleExpense = async (
     "endKms",
     "totalKms",
     "diesel",
+    "otherAmount",
+    "remarkDescription",
     "status",
   ];
 
   const changes = [];
 
   for (const field of trackedFields) {
-    const oldValue = existingExpense[field];
+    const oldValue =
+      field === "remarkDescription"
+        ? currentRemarkDescription
+        : existingExpense[field];
+
     const newValue = updatedData[field];
 
     const normalizeValue = (value) => {
@@ -202,6 +281,15 @@ const updateVehicleExpense = async (
         value !== undefined
       ) {
         return new Date(value).getTime();
+      }
+
+      if (field === "remarkDescription") {
+        return JSON.stringify(
+          (value || []).map((item) => ({
+            description: item.description ?? "",
+            amount: Number(item.amount ?? 0),
+          }))
+        );
       }
 
       return value ?? null;
@@ -219,7 +307,7 @@ const updateVehicleExpense = async (
     }
   }
 
-  // Save Vehicle Expense and Change History
+  // SAVE VEHICLE EXPENSE AND CHANGE HISTORY
   if (changes.length > 0) {
     existingExpense.set(updatedData);
 
@@ -248,8 +336,6 @@ const updateVehicleExpense = async (
 
     const newDiesel = existingExpense.diesel;
 
-    // Diesel amount changed from 0 to a positive amount
-    // OR existing positive amount changed.
     if (newDiesel > 0) {
       // Find Diesel Expense Category
       const dieselCategory = await FinanceCategory.findOne({
@@ -263,7 +349,7 @@ const updateVehicleExpense = async (
         );
       }
 
-      // Find existing Finance Transaction
+      // Find Existing Finance Transaction
       const existingTransaction =
         await FinanceTransaction.findOne({
           sourceModule: SOURCE_MODULE,
@@ -317,7 +403,7 @@ const updateVehicleExpense = async (
     }
 
     // Diesel amount changed to zero after a transaction exists.
-    // Handle this with Finance Transaction reversal logic later.
+    // Existing reversal logic is not implemented.
     if (newDiesel === 0 && Number(oldDiesel) > 0) {
       throw new Error(
         "Diesel transaction reversal is not implemented yet."
@@ -325,9 +411,119 @@ const updateVehicleExpense = async (
     }
   }
 
+  // FINANCE TRANSACTION - OTHER AMOUNT
+  const otherAmountChanged = changes.some(
+    (change) => change.field === "otherAmount"
+  );
+
+  const remarkDescriptionChanged = changes.some(
+    (change) => change.field === "remarkDescription"
+  );
+
+  const otherFinanceDetailsChanged = changes.some(
+    (change) =>
+      ["date", "vehicle", "driver"].includes(change.field)
+  );
+
+  if (
+    otherAmountChanged ||
+    remarkDescriptionChanged ||
+    otherFinanceDetailsChanged
+  ) {
+    const newOtherAmount = existingExpense.otherAmount ?? 0;
+
+    // Find Other Expense Category
+    const otherCategory = await FinanceCategory.findOne({
+      name: "vehicle-expense-other",
+      type: "expense",
+    });
+
+    if (!otherCategory && newOtherAmount > 0) {
+      throw new Error(
+        "Vehicle expense other category not found."
+      );
+    }
+
+    // Find Existing Other Finance Transaction
+    const existingOtherTransaction =
+      await FinanceTransaction.findOne({
+        sourceModule: SOURCE_MODULE,
+        sourceId: existingExpense._id,
+        sourceType: OTHER_SOURCE_TYPE,
+      });
+
+    // Safely Prepare Remark Description
+    const safeRemarkDescription = Array.isArray(
+      existingExpense.remarkDescription
+    )
+      ? existingExpense.remarkDescription
+      : [];
+
+    const otherDescription = safeRemarkDescription
+      .filter(
+        (item) =>
+          item.description || Number(item.amount) > 0
+      )
+      .map(
+        (item) =>
+          `${item.description}: ₹${Number(item.amount ?? 0).toFixed(2)}`
+      )
+      .join(", ");
+
+    const transactionDescription =
+      `Vehicle ${existingExpense.vehicle} - ${existingExpense.driver}` +
+      (otherDescription ? ` | ${otherDescription}` : "");
+
+    // Finance Transaction Data
+    const otherTransactionData = {
+      entryMode: "automatic",
+      type: "expense",
+      categoryId: otherCategory?._id,
+      amount: newOtherAmount,
+      transactionDate: existingExpense.date,
+      paymentMethod: "cash",
+      description: transactionDescription,
+      sourceModule: SOURCE_MODULE,
+      sourceId: existingExpense._id,
+      sourceType: OTHER_SOURCE_TYPE,
+    };
+
+    if (existingOtherTransaction) {
+      // UPDATE EXISTING OTHER FINANCE TRANSACTION
+      await updateTransaction(
+        {
+          sourceModule: SOURCE_MODULE,
+          sourceId: existingExpense._id,
+          sourceType: OTHER_SOURCE_TYPE,
+        },
+        {
+          ...(otherCategory && {
+            categoryId: otherCategory._id,
+          }),
+          amount: newOtherAmount,
+          transactionDate: existingExpense.date,
+          paymentMethod: "cash",
+          description: transactionDescription,
+        },
+        userId,
+        {
+          sourceModule: SOURCE_MODULE,
+        }
+      );
+    } else if (newOtherAmount > 0) {
+      // CREATE NEW OTHER FINANCE TRANSACTION
+      await createTransaction(
+        otherTransactionData,
+        userId,
+        {
+          sourceModule: SOURCE_MODULE,
+        }
+      );
+    }
+  }
+
   return existingExpense;
 };
-
 
 
 // DELETE VEHICLE EXPENSE
@@ -339,16 +535,18 @@ const deleteVehicleExpense = async (id) => {
     throw new Error("Vehicle expense not found.");
   }
 
-  // Prevent deleting a record with an active finance transaction.
+  // Check Diesel and Other Finance Transactions
   const linkedTransaction = await FinanceTransaction.findOne({
     sourceModule: SOURCE_MODULE,
     sourceId: vehicleExpense._id,
-    sourceType: SOURCE_TYPE,
+    sourceType: {
+      $in: [SOURCE_TYPE, OTHER_SOURCE_TYPE],
+    },
   });
 
   if (linkedTransaction) {
     throw new Error(
-      "This vehicle expense has a linked Finance Transaction. Handle the finance reversal before deleting."
+      "This vehicle expense has linked Finance Transactions. Handle the finance reversal before deleting."
     );
   }
 

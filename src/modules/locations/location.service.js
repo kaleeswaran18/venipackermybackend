@@ -60,7 +60,7 @@ const initializeOpeningStockForLocation = async (locationId) => {
         .lean(),
 
       PieceSize.find()
-        .select("_id width inch feet")
+        .select("_id width inch height")
         .lean(),
     ]);
 
@@ -125,7 +125,7 @@ const initializeOpeningStockForLocation = async (locationId) => {
             pieceSizeId: piece._id,
             width: piece.width,
             inch: piece.inch,
-            feet: piece.feet,
+            height: piece.height,
             count: 0,
           })),
         };
@@ -247,31 +247,60 @@ const createLocation = async ({ name }) => {
     throw new Error("Location already exists");
   }
 
+  // 1. Create Location
   const location = await Location.create({
     name,
   });
 
-  const dailyHistory =
-    await dailyHistoryService.getTodayDailyHistory();
+  // 2. Check today's Daily History
+  let dailyHistory = null;
+
+  try {
+    dailyHistory =
+      await dailyHistoryService.getTodayDailyHistory();
+  } catch (error) {
+    // Daily History not found - skip remaining processes
+    if (error.statusCode === 404) {
+      return {
+        location,
+        dailyHistoryId: null,
+        message:
+          "Location created successfully. Daily History not found. Initialization skipped.",
+      };
+    }
+
+    // Other errors should not be ignored
+    throw error;
+  }
+
+  // Safety check
+  if (!dailyHistory?._id) {
+    return {
+      location,
+      dailyHistoryId: null,
+      message:
+        "Location created successfully. Daily History not found. Initialization skipped.",
+    };
+  }
 
   const dailyHistoryId = dailyHistory._id;
 
-  // 1. Create missing Opening Stock records
+  // 3. Create missing Opening Stock records
   await initializeOpeningStockForLocation(location._id);
 
-  // 2. Add Production
+  // 4. Add Production
   await addLocationToProduction(
     dailyHistoryId,
     location._id
   );
 
-  // 3. Add Consumption from Opening Stock
+  // 5. Add Consumption from Opening Stock
   await addLocationToConsumption(
     dailyHistoryId,
     location._id
   );
 
-  // 4. Create Overall Stock
+  // 6. Create Overall Stock
   await addLocationToOverallStock(location._id);
 
   return {
@@ -665,7 +694,7 @@ const addLocationToConsumption = async (
           pieceSizeId: piece.pieceSizeId,
           width: piece.width,
           inch: piece.inch,
-          feet: piece.feet,
+          height: piece.height,
           count: 0,
         }));
       }
