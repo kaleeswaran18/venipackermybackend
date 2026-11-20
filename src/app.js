@@ -61,7 +61,7 @@ const dailyHistoryRoutes = require(
   "./modules/daily-history/daily-history.routes"
 );
 const purchaseRoutes = require(
-  "./modules/purchase/Purchase.routes"
+  "./modules/Purchase/Purchase.routes"
 );
 const vehicleExpenseRoutes = require(
   "./modules/VehicleExpense/VehicleExpense.routes"
