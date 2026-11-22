@@ -1,5 +1,5 @@
-const authService = require("./auth.service");
 
+const authService = require("./auth.service");
 
 // =========================
 // REGISTER
@@ -19,7 +19,6 @@ const register = async (req, res, next) => {
   }
 };
 
-
 // =========================
 // LOGIN
 // =========================
@@ -31,8 +30,10 @@ const login = async (req, res, next) => {
     res.cookie("refreshToken", result.refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "strict",
+      sameSite:
+        process.env.NODE_ENV === "production" ? "none" : "strict",
       maxAge: 7 * 24 * 60 * 60 * 1000,
+      path: "/",
     });
 
     res.status(200).json({
@@ -47,7 +48,6 @@ const login = async (req, res, next) => {
     next(error);
   }
 };
-
 
 // =========================
 // REFRESH TOKEN
@@ -64,8 +64,10 @@ const refresh = async (req, res, next) => {
     res.cookie("refreshToken", result.refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "strict",
+      sameSite:
+        process.env.NODE_ENV === "production" ? "none" : "strict",
       maxAge: 7 * 24 * 60 * 60 * 1000,
+      path: "/",
     });
 
     res.status(200).json({
@@ -79,7 +81,6 @@ const refresh = async (req, res, next) => {
     next(error);
   }
 };
-
 
 // =========================
 // LOGOUT
@@ -95,7 +96,9 @@ const logout = async (req, res, next) => {
     res.clearCookie("refreshToken", {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "strict",
+      sameSite:
+        process.env.NODE_ENV === "production" ? "none" : "strict",
+      path: "/",
     });
 
     res.status(200).json({
@@ -106,7 +109,6 @@ const logout = async (req, res, next) => {
     next(error);
   }
 };
-
 
 // =========================
 // EXPORT

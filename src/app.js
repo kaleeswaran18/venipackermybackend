@@ -94,7 +94,9 @@ app.use(express.urlencoded({ extended: true }));
 
 app.use(
   cors({
-    origin: true,
+    origin: [
+      "https://venipackermyfroentend-lake.vercel.app",
+    ],
     credentials: true,
   })
 );
